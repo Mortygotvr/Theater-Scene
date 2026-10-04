@@ -80,17 +80,10 @@ static BOOK: LazyLock<Mutex<FontBook>> = LazyLock::new(|| {
     Mutex::new(book)
 });
 
-/// Where Theater's own fonts are: its repo, or OBS's plugin data folder.
+/// Where Theater's own fonts are: in what ships with it (paths::assets_dir).
 fn bundled_font_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![crate::get_theater_repo_dir().join("Trust").join("assets").join("fonts")];
-    for base in ["APPDATA", "PROGRAMDATA"].iter().filter_map(|v| std::env::var(v).ok()) {
-        dirs.push(PathBuf::from(base).join("obs-studio").join("plugins").join("theater-scene").join("data").join("assets").join("fonts"));
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        dirs.push(PathBuf::from(home).join(".config/obs-studio/plugins/theater-scene/data/assets/fonts"));
-    }
+    let mut dirs = vec![crate::paths::assets_dir().join("fonts")];
     dirs.retain(|d| d.is_dir());
-    dirs.dedup();
     dirs
 }
 

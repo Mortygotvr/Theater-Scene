@@ -386,9 +386,8 @@ local bit = require("bit")             -- a library it has anyway
 
     #[test]
     fn doom_and_the_filters_have_nothing_blocked() {
-        let repo = crate::get_theater_repo_dir();
-        let mut scripts = vec![repo.join("doom.lua"), repo.join("snow_storm.lua")];
-        if let Ok(dir) = std::fs::read_dir(repo.join("filters")) {
+        let mut scripts = vec![crate::paths::scripts_dir().join("doom.lua"), crate::paths::scripts_dir().join("snow_storm.lua")];
+        if let Ok(dir) = std::fs::read_dir(crate::paths::filters_dir()) {
             scripts.extend(dir.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "lua")));
         }
         for script in scripts {

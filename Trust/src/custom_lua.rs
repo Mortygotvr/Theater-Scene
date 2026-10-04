@@ -731,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_snow_storm_script_syntax_and_execution() {
-        let p_buf = crate::get_theater_repo_dir().join("snow_storm.lua");
+        let p_buf = crate::paths::scripts_dir().join("snow_storm.lua");
         let path = p_buf.to_str().unwrap();
         let code = std::fs::read_to_string(path).expect("snow_storm.lua must exist");
         let lua = Lua::new();
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_snow_storm_no_unwanted_water_and_no_bouncing() {
-        let p_buf = crate::get_theater_repo_dir().join("snow_storm.lua");
+        let p_buf = crate::paths::scripts_dir().join("snow_storm.lua");
         let path = p_buf.to_str().unwrap();
         let code = std::fs::read_to_string(path).expect("snow_storm.lua must exist");
         let lua = Lua::new();
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_doom_script_swirl_and_pull() {
-        let p_buf = crate::get_theater_repo_dir().join("doom.lua");
+        let p_buf = crate::paths::scripts_dir().join("doom.lua");
         let path = p_buf.to_str().unwrap();
         if !std::path::Path::new(path).is_file() {
             return;

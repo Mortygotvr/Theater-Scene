@@ -729,6 +729,14 @@ pub struct CachedImagePixels {
 
 static REDEEM_PIXEL_CACHE: parking_lot::Mutex<Option<std::collections::HashMap<u32, std::sync::Arc<CachedImagePixels>>>> = parking_lot::Mutex::new(None);
 
+/// The picture a redeem's own file (redeems\<key>.json) names, if any.
+pub(crate) fn redeem_image_src(key: &str) -> Option<String> {
+    let file = std::fs::File::open(crate::paths::redeem_file(key)?).ok()?;
+    let val: serde_json::Value = serde_json::from_reader(file).ok()?;
+    let src = val.get("imageSrc").or_else(|| val.get("image_src"))?.as_str()?;
+    (!src.is_empty()).then(|| src.to_string())
+}
+
 pub fn get_or_load_redeem_pixels(redeem_id: u32) -> Option<std::sync::Arc<CachedImagePixels>> {
     get_or_load_redeem_pixels_internal(redeem_id, None, None)
 }
@@ -768,37 +776,7 @@ pub fn get_or_load_redeem_pixels_internal(
                 state.physics.try_read().and_then(|p| p.id_to_redeem_key.get(&redeem_id).cloned())
             };
             if let Some(key) = key_opt {
-                let sanitized = key.to_lowercase().replace(' ', "");
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/home/mortygotvr".to_string());
-                let repo = crate::get_theater_repo_dir();
-                let candidate_paths = [
-                    format!("{}/redeems/{}.json", repo.display(), sanitized),
-                    format!("{}/redeems/{}.json", repo.display(), key),
-                    format!("{}/redeems/{}.json", home, sanitized),
-                    format!("{}/redeems/{}.json", home, key),
-                    format!("/home/mortygotvr/redeems/{}.json", sanitized),
-                    format!("/home/mortygotvr/redeems/{}.json", key),
-                    format!("/home/mortygotvr/repo/theater-scene/redeems/{}.json", sanitized),
-                    format!("redeems/{}.json", sanitized),
-                    format!("./redeems/{}.json", sanitized),
-                    format!("/home/mortygotvr/repo/theater-scene/redeems/{}.json", key),
-                    format!("redeems/{}.json", key),
-                    format!("./redeems/{}.json", key),
-                ];
-                let mut found = None;
-                for cp in &candidate_paths {
-                    if let Ok(file) = std::fs::File::open(cp) {
-                        if let Ok(val) = serde_json::from_reader::<_, serde_json::Value>(file) {
-                            if let Some(s) = val.get("imageSrc").or_else(|| val.get("image_src")).and_then(|v| v.as_str()) {
-                                if !s.is_empty() {
-                                    found = Some(s.to_string());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                found
+                redeem_image_src(&key)
             } else {
                 None
             }
@@ -814,27 +792,8 @@ pub fn get_or_load_redeem_pixels_internal(
     } else if let Ok(b) = base64::prelude::BASE64_STANDARD.decode(img_src.trim()) {
         b
     } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/mortygotvr".to_string());
-        let repo = crate::get_theater_repo_dir();
-        let candidate_paths = [
-            format!("{}/{}", repo.display(), img_src),
-            format!("{}/assets/{}", repo.display(), img_src),
-            format!("{}/{}", home, img_src),
-            format!("{}/repo/theater-scene/{}", home, img_src),
-            format!("{}/repo/theater-scene/assets/{}", home, img_src),
-            format!("/home/mortygotvr/repo/theater-scene/{}", img_src),
-            format!("/home/mortygotvr/repo/theater-scene/assets/{}", img_src),
-            format!("assets/{}", img_src),
-            img_src.clone(),
-        ];
-        let mut found = None;
-        for cp in &candidate_paths {
-            if let Ok(b) = std::fs::read(cp) {
-                found = Some(b);
-                break;
-            }
-        }
-        found?
+        // Named relative to your redeems, your data or what ships with Theater
+        std::fs::read(crate::paths::find_file(&img_src)?).ok()?
     };
 
     let rgba = match image::load_from_memory(&raw_bytes) {
@@ -954,30 +913,9 @@ impl PhysicsEngine {
             }
         }
         if !self.redeem_images.contains_key(&redeem_id) && key != "default" {
-            let sanitized = key.to_lowercase().replace(' ', "");
-            let paths = [
-                format!("/home/mortygotvr/repo/theater-scene/redeems/{}.json", sanitized),
-                format!("redeems/{}.json", sanitized),
-                format!("./redeems/{}.json", sanitized),
-                format!("/home/mortygotvr/repo/theater-scene/redeems/{}.json", key),
-                format!("redeems/{}.json", key),
-                format!("./redeems/{}.json", key),
-            ];
-            for p in &paths {
-                if let Ok(file) = std::fs::File::open(p) {
-                    if let Ok(val) = serde_json::from_reader::<_, serde_json::Value>(file) {
-                        let src_opt = val.get("imageSrc")
-                            .or_else(|| val.get("image_src"))
-                            .and_then(|v| v.as_str());
-                        if let Some(src) = src_opt {
-                            if !src.is_empty() {
-                                self.redeem_images.insert(redeem_id, src.to_string());
-                                store_redeem_pixels(redeem_id, src);
-                                break;
-                            }
-                        }
-                    }
-                }
+            if let Some(src) = redeem_image_src(&key) {
+                self.redeem_images.insert(redeem_id, src.clone());
+                store_redeem_pixels(redeem_id, &src);
             }
         }
 

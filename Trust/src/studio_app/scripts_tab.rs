@@ -73,8 +73,7 @@ impl StudioApp {
     }
 
     fn start_scripts_scan(&mut self) {
-        let repo = crate::get_theater_repo_dir();
-        let mut dirs = vec![get_filters_dir(), repo.clone(), repo.join("scripts")];
+        let mut dirs = vec![get_filters_dir(), crate::paths::scripts_dir(), crate::paths::user_filters_dir(), crate::paths::user_scripts_dir()];
         dirs.extend(crate::script_filters::script_dirs());
         let extra: Vec<PathBuf> = self
             .lua_effects_list
@@ -751,12 +750,13 @@ fn show_in_folder(path: &Path) {
     }
 }
 
-/// Where a new script of `kind` goes, and its first version.
+/// Where a new script of `kind` goes (your folders: the shipped ones may not
+/// be writable), and its first version.
 fn new_script(kind: Kind) -> Result<PathBuf, String> {
     let (dir, stem, ext) = match kind {
-        Kind::Reaction => (get_filters_dir(), "new_reaction", "lua"),
-        Kind::Redeem => (crate::get_theater_repo_dir(), "new_redeem", "lua"),
-        Kind::Filter => (get_filters_dir(), "new_filter", "rhai"),
+        Kind::Reaction => (crate::paths::user_filters_dir(), "new_reaction", "lua"),
+        Kind::Redeem => (crate::paths::user_scripts_dir(), "new_redeem", "lua"),
+        Kind::Filter => (crate::paths::user_filters_dir(), "new_filter", "rhai"),
     };
     let path = (1..1000)
         .map(|n| dir.join(if n == 1 { format!("{}.{}", stem, ext) } else { format!("{}_{}.{}", stem, n, ext) }))

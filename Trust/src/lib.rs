@@ -25,6 +25,7 @@ pub mod egui_docks;
 pub mod script_docks;
 pub mod render_gate;
 pub mod trigger_builder;
+pub mod paths;
 
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
@@ -33,64 +34,6 @@ use base64::prelude::*;
 use crate::state::get_state;
 use crate::tracker::{scan_rgba_with_transform, CollisionMask};
 use crate::types::{GizmoDragMode, Hitbox, Point2D, SourceTransform};
-
-/// Dynamically locates the root directory of the Theater Scene repository.
-pub fn get_theater_repo_dir() -> std::path::PathBuf {
-    // 1. Explicit env var
-    if let Ok(val) = std::env::var("THEATER_SCENE_DIR") {
-        let p = std::path::PathBuf::from(val);
-        if p.exists() {
-            return p;
-        }
-    }
-    // 2. Current working directory or its parent
-    if let Ok(cwd) = std::env::current_dir() {
-        if cwd.join("theater_targets.json").exists() {
-            return cwd;
-        }
-        if cwd.join("theater scene(rust)").join("theater_targets.json").exists() {
-            return cwd.join("theater scene(rust)");
-        }
-        if let Some(parent) = cwd.parent() {
-            if parent.join("theater_targets.json").exists() {
-                return parent.to_path_buf();
-            }
-        }
-    }
-    // 3. Look relative to the current module/DLL
-    #[cfg(target_os = "windows")]
-    {
-        unsafe extern "system" {
-            fn GetModuleHandleExW(dwFlags: u32, lpModuleName: *const u16, phModule: *mut *mut std::ffi::c_void) -> i32;
-            fn GetModuleFileNameW(hModule: *mut std::ffi::c_void, lpFilename: *mut u16, nSize: u32) -> u32;
-        }
-        let mut h_module: *mut std::ffi::c_void = std::ptr::null_mut();
-        unsafe {
-            GetModuleHandleExW(0x00000004 | 0x00000002, get_theater_repo_dir as *const u16, &mut h_module);
-        }
-        if !h_module.is_null() {
-            let mut buf = [0u16; 1024];
-            let len = unsafe { GetModuleFileNameW(h_module, buf.as_mut_ptr(), buf.len() as u32) };
-            if len > 0 {
-                let dll_path = std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
-                for ancestor in dll_path.ancestors() {
-                    if ancestor.join("theater_targets.json").exists() {
-                        return ancestor.to_path_buf();
-                    }
-                }
-            }
-        }
-    }
-    // 4. Fallback to known local workspace path
-    #[cfg(target_os = "windows")]
-    {
-        let win_path = std::path::PathBuf::from(r"c:\Users\death\repo\theater scene(rust)");
-        if win_path.exists() {
-            return win_path;
-        }
-    }
-    std::path::PathBuf::from("/home/mortygotvr/repo/theater-scene")
-}
 
 /// Initialize the Trust runtime.
 #[unsafe(no_mangle)]
@@ -124,7 +67,9 @@ pub extern "C" fn obs_module_ver() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn obs_module_set_pointer(_module: *mut std::ffi::c_void) {}
+pub extern "C" fn obs_module_set_pointer(module: *mut std::ffi::c_void) {
+    crate::paths::set_module(module);
+}
 
 /// Panics in the plugin's own threads (e.g. the Studio window's) otherwise
 /// vanish without a trace on Windows — OBS has no console. Log them to
@@ -183,6 +128,8 @@ pub extern "system" fn DllMain(_module: *mut std::ffi::c_void, reason: u32, _res
 #[unsafe(no_mangle)]
 pub extern "C" fn obs_module_load() -> bool {
     install_panic_logger();
+    // Before anything reads your poses, redeems or settings
+    crate::paths::import_old_data();
     // Before trust_init, which loads the redeems and signals the list change
     crate::obs_procs::register();
     trust_init();
@@ -1087,18 +1034,10 @@ pub fn play_sound_str(sound_str: &str) -> bool {
                 return trust_play_audio_file(c_path.as_ptr(), 1.0);
             }
         }
-        let in_redeems = crate::studio_app::get_redeems_dir().join(s);
-        if in_redeems.is_file() {
-            if let Some(in_redeems_str) = in_redeems.to_str() {
-                if let Ok(c_path) = std::ffi::CString::new(in_redeems_str) {
-                    return trust_play_audio_file(c_path.as_ptr(), 1.0);
-                }
-            }
-        }
-        let in_repo = get_theater_repo_dir().join(s);
-        if in_repo.is_file() {
-            if let Some(in_repo_str) = in_repo.to_str() {
-                if let Ok(c_path) = std::ffi::CString::new(in_repo_str) {
+        // Named relative to your redeems, your data or what ships with Theater
+        if let Some(found) = crate::paths::find_file(s) {
+            if let Some(found_str) = found.to_str() {
+                if let Ok(c_path) = std::ffi::CString::new(found_str) {
                     return trust_play_audio_file(c_path.as_ptr(), 1.0);
                 }
             }

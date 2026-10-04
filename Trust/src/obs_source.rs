@@ -3371,7 +3371,7 @@ pub const MASK_RESOLUTIONS: [(&str, u64); 5] = [
 static SCAN_MAX_PIXELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(DEFAULT_SCAN_MAX_PIXELS);
 
 fn settings_file() -> std::path::PathBuf {
-    crate::get_theater_repo_dir().join("theater_settings.json")
+    crate::paths::file("theater_settings.json")
 }
 
 /// How often the Studio offers to scan targets: (name, every how many frames).
@@ -4603,28 +4603,7 @@ unsafe fn get_or_create_redeem_texture(
                 p.id_to_redeem_key.get(&redeem_id).cloned()
             };
             if let Some(key) = key_opt {
-                let sanitized = key.to_lowercase().replace(' ', "");
-                let candidate_paths = [
-                    format!("/home/mortygotvr/repo/theater-scene/redeems/{}.json", sanitized),
-                    format!("redeems/{}.json", sanitized),
-                    format!("./redeems/{}.json", sanitized),
-                    format!("/home/mortygotvr/repo/theater-scene/redeems/{}.json", key),
-                    format!("redeems/{}.json", key),
-                    format!("./redeems/{}.json", key),
-                ];
-                let mut found = None;
-                for cp in &candidate_paths {
-                    if let Ok(file) = std::fs::File::open(cp) {
-                        if let Ok(val) = serde_json::from_reader::<_, serde_json::Value>(file) {
-                            if let Some(s) = val.get("imageSrc").or_else(|| val.get("image_src")).and_then(|v| v.as_str()) {
-                                if !s.is_empty() {
-                                    found = Some(s.to_string());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                let found = crate::physics::redeem_image_src(&key);
                 if let Some(ref s) = found {
                     state.physics.write().redeem_images.insert(redeem_id, s.clone());
                 }
@@ -4644,20 +4623,8 @@ unsafe fn get_or_create_redeem_texture(
     } else if let Ok(b) = base64::prelude::BASE64_STANDARD.decode(img_src.trim()) {
         b
     } else {
-        let candidate_paths = [
-            format!("/home/mortygotvr/repo/theater-scene/{}", img_src),
-            format!("/home/mortygotvr/repo/theater-scene/assets/{}", img_src),
-            format!("assets/{}", img_src),
-            img_src.clone(),
-        ];
-        let mut found_bytes = None;
-        for cp in &candidate_paths {
-            if let Ok(b) = std::fs::read(cp) {
-                found_bytes = Some(b);
-                break;
-            }
-        }
-        found_bytes?
+        // Named relative to your redeems, your data or what ships with Theater
+        std::fs::read(crate::paths::find_file(&img_src)?).ok()?
     };
 
     let mut frames_vec = Vec::new();
@@ -5993,24 +5960,24 @@ pub(crate) fn open_trust_qt_lib() -> *mut c_void {
         }
     }
 
-    let paths: [&[u8]; 12] = [
-        b"C:\\ProgramData\\obs-studio\\plugins\\theater-scene\\bin\\64bit\\trust_qt.dll\0",
-        b"C:\\Users\\death\\AppData\\Roaming\\obs-studio\\plugins\\theater-scene\\bin\\64bit\\trust_qt.dll\0",
-        b"C:\\Program Files\\obs-studio\\obs-plugins\\64bit\\trust_qt.dll\0",
-        b"c:\\Users\\death\\repo\\theater scene(rust)\\trust_qt.dll\0",
-        b"c:\\Users\\death\\repo\\theater scene(rust)\\Trust\\target\\release\\trust_qt.dll\0",
-        b"trust_qt.dll\0",
-        b"libtrust_qt.dll\0",
-        b"./trust_qt.dll\0",
-        b"/home/mortygotvr/.config/obs-studio/plugins/theater-scene/bin/64bit/libtrust_qt.so\0",
-        b"/home/mortygotvr/repo/theater-scene/libtrust_qt.so\0",
-        b"libtrust_qt.so\0",
-        b"./libtrust_qt.so\0",
-    ];
-    for p in paths {
-        let handle = unsafe { dlopen(p.as_ptr() as *const c_char, 1) };
+    // Then the plugin's usual folders, then the system's library search
+    let mut candidates: Vec<String> = Vec::new();
+    #[cfg(target_os = "windows")]
+    for base in ["PROGRAMDATA", "APPDATA"] {
+        if let Ok(dir) = std::env::var(base) {
+            candidates.push(format!(r"{dir}\obs-studio\plugins\theater-scene\bin\64bit\trust_qt.dll"));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(format!("{home}/.config/obs-studio/plugins/theater-scene/bin/64bit/libtrust_qt.so"));
+    }
+    candidates.extend(["trust_qt.dll", "libtrust_qt.so"].map(String::from));
+    for p in candidates {
+        let Ok(c_path) = CString::new(p.as_str()) else { continue };
+        let handle = unsafe { dlopen(c_path.as_ptr(), 1) };
         if !handle.is_null() {
-            trust_log(&format!("[Trust Core] 🎬 Loaded Qt toolkit from: {}", String::from_utf8_lossy(p)));
+            trust_log(&format!("[Trust Core] 🎬 Loaded Qt toolkit from: {}", p));
             return handle;
         }
     }

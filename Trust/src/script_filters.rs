@@ -1013,10 +1013,11 @@ pub fn file_renamed(ty: &ScriptType, new: &Path) {
     trust_log(&format!("[Rhai] ✏ {} is now {}", old.display(), new.display()));
 }
 
-/// The folders Rhai filters are looked for in: Theater's filters folder and
-/// the ones it remembers (remember_folder).
+/// The folders Rhai filters are looked for in: the ones Theater ships, yours
+/// (paths::user_filters_dir), and
+/// the folders it remembers (remember_folder).
 pub fn script_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![crate::studio_app::get_filters_dir()];
+    let mut dirs = vec![crate::studio_app::get_filters_dir(), crate::paths::user_filters_dir()];
     for dir in remembered_folders() {
         if !dirs.contains(&dir) {
             dirs.push(dir);
@@ -1026,7 +1027,7 @@ pub fn script_dirs() -> Vec<PathBuf> {
 }
 
 fn folders_file() -> PathBuf {
-    crate::get_theater_repo_dir().join("theater_script_folders.json")
+    crate::paths::file("theater_script_folders.json")
 }
 
 /// The other folders Theater looks for Rhai filters in.
@@ -1041,7 +1042,7 @@ pub fn remembered_folders() -> Vec<PathBuf> {
 /// False if it did already.
 pub fn remember_folder(dir: &Path) -> bool {
     let mut folders = remembered_folders();
-    if dir == crate::studio_app::get_filters_dir() || folders.iter().any(|f| f == dir) {
+    if script_dirs().iter().any(|d| d == dir) || folders.iter().any(|f| f == dir) {
         return false;
     }
     folders.push(dir.to_path_buf());
@@ -2337,7 +2338,7 @@ mod tests {
     /// Theatre 360's folder, when it's on this machine.
     fn theatre_360_dir() -> Option<PathBuf> {
         let mut candidates = script_dirs();
-        if let Some(parent) = crate::get_theater_repo_dir().parent() {
+        if let Some(parent) = crate::paths::data_dir().parent() {
             candidates.push(parent.join("Theater - 360"));
         }
         candidates

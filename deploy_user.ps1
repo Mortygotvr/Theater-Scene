@@ -31,10 +31,12 @@ foreach ($baseData in @("C:\ProgramData\obs-studio\plugins\theater-scene\data", 
     if (!(Test-Path $baseData)) {
         New-Item -ItemType Directory -Path $baseData -Force | Out-Null
     }
-    # The folders' contents: copying a folder onto one that already exists
-    # puts it inside (data\assets\assets)
-    foreach ($pair in @(@("$PSScriptRoot\Trust\assets", "$baseData\assets"), @("$PSScriptRoot\filters", "$baseData\filters"))) {
+    # What ships with Theater, replaced as a whole (your own data is in
+    # plugin_config\theater-scene, never here). The folders' contents: copying
+    # a folder onto one that already exists puts it inside (data\assets\assets)
+    foreach ($pair in @(@("$PSScriptRoot\Trust\assets", "$baseData\assets"), @("$PSScriptRoot\filters", "$baseData\filters"), @("$PSScriptRoot\scripts", "$baseData\scripts"))) {
         if (Test-Path $pair[0]) {
+            if (Test-Path $pair[1]) { Remove-Item $pair[1] -Recurse -Force }
             New-Item -ItemType Directory -Path $pair[1] -Force | Out-Null
             Copy-Item "$($pair[0])\*" $pair[1] -Recurse -Force
         }

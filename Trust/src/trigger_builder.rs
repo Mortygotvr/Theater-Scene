@@ -13,7 +13,7 @@ pub use theater_shared::triggers::*;
 
 /// Gives the lists Theater's chats, alerts and relay. Call once, at load.
 pub fn install() {
-    theater_shared::seen::set_file(crate::get_theater_repo_dir().join("theater_reader_seen.json"));
+    theater_shared::seen::set_file(crate::paths::file("theater_reader_seen.json"));
     theater_shared::builder::set_host(theater_shared::builder::Host { chats: reader_chats, subscribe: crate::script_feed::subscribe });
 }
 

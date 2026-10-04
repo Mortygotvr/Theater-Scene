@@ -450,7 +450,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn redeem_sounds_decode() {
-        let dir = Path::new(r"C:\Users\death\OneDrive\Desktop\obs");
+        let Some(home) = std::env::var_os("USERPROFILE") else { return };
+        let dir = Path::new(&home).join(r"OneDrive\Desktop\obs");
         for name in ["Nomnomnom.mp3", "NomoftheValkery.ogg"] {
             let path = dir.join(name);
             if !path.is_file() {

@@ -288,12 +288,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
 fn pack_named_files(script: &Path, files: &mut Files, missing: &mut Vec<String>, depth: usize) {
     let Ok(source) = std::fs::read_to_string(script) else { return };
     let script_dir = script.parent().unwrap_or(Path::new("")).to_path_buf();
-    let repo = crate::get_theater_repo_dir();
     let (literals, declared) = named_files(&source);
     let named = literals.into_iter().map(|n| (n, false)).chain(declared.into_iter().map(|n| (n, true)));
     for (name, is_declared) in named {
         let found = package_path(&name).and_then(|at| {
-            [script_dir.join(&at), repo.join(&at)]
+            [script_dir.join(&at), crate::paths::config_dir().join(&at), crate::paths::data_dir().join(&at)]
                 .into_iter()
                 .find(|p| p.is_file())
                 .map(|disk| (at, disk))
@@ -363,18 +362,7 @@ fn find_script(raw: &str) -> Option<PathBuf> {
 }
 
 fn find_asset(raw: &str) -> Option<PathBuf> {
-    let raw = raw.trim();
-    if raw.is_empty() || raw.starts_with("data:") {
-        return None;
-    }
-    let path = Path::new(raw);
-    [
-        path.to_path_buf(),
-        crate::studio_app::get_redeems_dir().join(path),
-        crate::get_theater_repo_dir().join(path),
-    ]
-    .into_iter()
-    .find(|p| p.is_file())
+    crate::paths::find_file(raw)
 }
 
 /// The non-empty text at `keys` in the settings.

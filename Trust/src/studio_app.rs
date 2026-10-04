@@ -905,7 +905,7 @@ impl RedeemConfig {
                 self.fluid_viscosity = Some(0.70); self.fluid_gravity = Some(0.90);
             }
             "glass" => {
-                let smooth_tex = crate::get_theater_repo_dir().join("Trust/assets/textures/smooth_deformed_glass.png").to_string_lossy().to_string();
+                let smooth_tex = crate::paths::texture("smooth_deformed_glass.png");
                 self.water_texture_path = Some(smooth_tex);
                 self.water_texture_scale = Some(180.0);
                 self.water_texture_scroll_speed = Some(18.0);
@@ -1021,76 +1021,35 @@ pub fn switch_studio_tab(tab: StudioActiveTab) {
     }
 }
 
+/// Your redeems' folder (paths::redeems_dir).
 pub fn get_redeems_dir() -> std::path::PathBuf {
-    // The relative "redeems" candidate only resolves correctly if this runs
-    // after OBS's working directory has settled to the user's home directory
-    // — true later (e.g. the Studio window's own "New" button, which is why
-    // newly created redeems landed in ~/redeems), but not necessarily true
-    // yet at the very first call from module load / early startup, which
-    // needs an absolute fallback that doesn't depend on cwd — resolved from
-    // $HOME rather than a hardcoded username so it isn't tied to this one
-    // machine's account name.
-    //
-    // Windows has no $HOME, and OBS's working directory there is its own
-    // Program Files bin folder, so the relative fallback pointed at a folder
-    // that doesn't exist and can't be written: redeems never saved or loaded.
-    // Keep them in the repo instead, next to theater_targets.json.
-    #[cfg(target_os = "windows")]
-    {
-        return crate::get_theater_repo_dir().join("redeems");
-    }
-    #[allow(unreachable_code)]
-    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-    let mut candidates = vec![std::path::PathBuf::from("redeems")];
-    if let Some(ref home) = home {
-        candidates.push(home.join("redeems"));
-        candidates.push(home.join("repo/theater-scene/redeems"));
-    }
-    for c in &candidates {
-        if c.is_dir() {
-            return c.clone();
-        }
-    }
-    home.map(|h| h.join("redeems")).unwrap_or_else(|| std::path::PathBuf::from("redeems"))
+    crate::paths::redeems_dir()
 }
 
+/// The scripts and filters Theater ships with (paths::filters_dir).
 pub fn get_filters_dir() -> std::path::PathBuf {
-    let repo = crate::get_theater_repo_dir();
-    let candidates = [
-        repo.join("filters"),
-        std::path::PathBuf::from("filters"),
-        std::path::PathBuf::from("/home/mortygotvr/repo/theater-scene/filters"),
-    ];
-    for c in &candidates {
-        if c.is_dir() {
-            return c.clone();
-        }
-    }
-    repo.join("filters")
+    crate::paths::filters_dir()
 }
 
-/// Finds the Lua script a redeem or reaction points at. A path from another
-/// machine (doom.lua's swirl, redeems made on Linux) doesn't exist here, so a
-/// missing file falls back to the one of the same name in the filters folder
-/// or the repo; a relative path is taken from the repo.
+/// Finds the Lua script a redeem or reaction points at. A path that doesn't
+/// exist here (one from another machine, doom.lua's swirl, a redeem made
+/// before the scripts moved) falls back to the script of the same name among
+/// the shipped filters and scripts and yours; a relative path is looked for
+/// like any file a redeem names (paths::find_file).
 pub fn resolve_script_path(raw: &str) -> String {
     let raw = raw.trim();
     let path = std::path::Path::new(raw);
     if raw.is_empty() || path.is_file() {
         return raw.to_string();
     }
-    let repo = crate::get_theater_repo_dir();
-    let mut candidates = Vec::new();
-    if path.is_relative() {
-        candidates.push(repo.join(path));
+    if let Some(found) = crate::paths::find_file(raw) {
+        return found.to_string_lossy().into_owned();
     }
     // Either separator: a Linux path on Windows and the other way round
-    if let Some(name) = raw.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()) {
-        candidates.push(get_filters_dir().join(name));
-        candidates.push(repo.join(name));
-    }
-    candidates
+    let Some(name) = raw.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()) else { return raw.to_string() };
+    [crate::paths::filters_dir(), crate::paths::scripts_dir(), crate::paths::user_filters_dir(), crate::paths::user_scripts_dir()]
         .into_iter()
+        .map(|dir| dir.join(name))
         .find(|c| c.is_file())
         .map(|c| c.to_string_lossy().into_owned())
         .unwrap_or_else(|| raw.to_string())
@@ -1112,19 +1071,7 @@ pub fn resolve_and_encode_asset(raw_path: &str) -> Option<String> {
     if raw.is_empty() {
         return None;
     }
-    let p = std::path::Path::new(raw);
-    if let Some(uri) = encode_file_path_to_data_uri(p) {
-        return Some(uri);
-    }
-    let in_redeems = get_redeems_dir().join(raw);
-    if let Some(uri) = encode_file_path_to_data_uri(&in_redeems) {
-        return Some(uri);
-    }
-    let in_repo = crate::get_theater_repo_dir().join(raw);
-    if let Some(uri) = encode_file_path_to_data_uri(&in_repo) {
-        return Some(uri);
-    }
-    None
+    encode_file_path_to_data_uri(&crate::paths::find_file(raw)?)
 }
 
 /// The file type of redeem packages (redeem_package), for the file dialogs
@@ -1177,7 +1124,8 @@ pub fn save_file_dialog(title: &str, file_filter: &str, file_name: &str) -> Opti
 /// caller already runs it on its own thread.
 #[cfg(target_os = "windows")]
 pub fn pick_file_dialog(title: &str, file_filter: &str) -> Option<std::path::PathBuf> {
-    win_file_dialog(title, file_filter, None, Some(&crate::get_theater_repo_dir()))
+    // (Windows opens the folder last used)
+    win_file_dialog(title, file_filter, None, None)
 }
 
 /// The Open dialog, or with `save_as` (the file name it starts on) the Save As
@@ -1758,7 +1706,7 @@ fn scan_lua_scripts_dir(dir: &std::path::Path) -> Vec<LuaScriptEntry> {
 /// Where the Lua effects removed from the Studio's list are remembered, by
 /// file name: the list leaves them out, their files stay in filters/.
 fn removed_lua_effects_path() -> std::path::PathBuf {
-    crate::get_theater_repo_dir().join("theater_removed_effects.json")
+    crate::paths::file("theater_removed_effects.json")
 }
 
 fn load_removed_lua_effects() -> std::collections::BTreeSet<String> {
@@ -1782,31 +1730,18 @@ fn effect_file_name(path: &std::path::Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// The Lua effects in filters/, except the ones removed from the list.
+/// The Lua effects Theater ships and the ones you made, except the ones
+/// removed from the list.
 fn lua_effects_in_filters(removed: &std::collections::BTreeSet<String>) -> Vec<LuaScriptEntry> {
-    scan_lua_scripts_dir(&get_filters_dir())
-        .into_iter()
-        .filter(|e| !removed.contains(&effect_file_name(&e.path)))
-        .collect()
+    let mut effects = scan_lua_scripts_dir(&get_filters_dir());
+    effects.extend(scan_lua_scripts_dir(&crate::paths::user_filters_dir()));
+    effects.into_iter().filter(|e| !removed.contains(&effect_file_name(&e.path))).collect()
 }
 
-/// Scans workspace and user scripts directories for custom redeem scripts.
+/// The custom redeem scripts Theater ships and the ones you made.
 pub fn scan_workspace_custom_scripts() -> Vec<LuaScriptEntry> {
     let mut out = Vec::new();
-    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-    let repo = crate::get_theater_repo_dir();
-    let mut dirs = vec![
-        std::path::PathBuf::from("."),
-        std::path::PathBuf::from("scripts"),
-        repo.clone(),
-        repo.join("scripts"),
-    ];
-    if let Some(ref home) = home {
-        dirs.push(home.join("repo/theater-scene"));
-        dirs.push(home.join("repo/theater-scene/scripts"));
-        dirs.push(home.join("scripts"));
-    }
-    for dir in dirs {
+    for dir in [crate::paths::scripts_dir(), crate::paths::user_scripts_dir()] {
         if dir.is_dir() {
             for entry in scan_lua_scripts_dir(&dir) {
                 if entry.name.eq_ignore_ascii_case("theater_chat") {
@@ -1988,7 +1923,7 @@ pub fn update_last_sent_pose_for_source(
 }
 
 pub fn get_last_active_pose_id() -> Option<String> {
-    let path = crate::get_theater_repo_dir().join("theater_last_pose.txt");
+    let path = crate::paths::file("theater_last_pose.txt");
     if let Ok(s) = std::fs::read_to_string(path) {
         let trimmed = s.trim().to_string();
         if !trimmed.is_empty() {
@@ -1999,7 +1934,7 @@ pub fn get_last_active_pose_id() -> Option<String> {
 }
 
 pub fn save_last_active_pose_id(id: &str) {
-    let path = crate::get_theater_repo_dir().join("theater_last_pose.txt");
+    let path = crate::paths::file("theater_last_pose.txt");
     let _ = std::fs::write(path, id);
 }
 
@@ -2079,13 +2014,8 @@ pub fn show_trigger_status(status: String) {
 pub fn reload_global_redeems() -> usize {
     let mut list = load_all_redeems_from_disk();
 
-    let repo_tj = crate::get_theater_repo_dir().join("theater.json");
-    let theater_json_candidates = [
-        repo_tj,
-        std::path::PathBuf::from("theater.json"),
-        std::path::PathBuf::from("./theater.json"),
-        std::path::PathBuf::from("/home/mortygotvr/repo/theater-scene/theater.json"),
-    ];
+    // The old JavaScript Theater's triggers, if you put its theater.json in your data
+    let theater_json_candidates = [crate::paths::file("theater.json")];
 
     for tj_path in &theater_json_candidates {
         if tj_path.exists() {
@@ -3032,13 +2962,7 @@ pub fn tick_active_transition(
 }
 
 pub fn read_disk_targets() -> Vec<crate::StudioSource> {
-    let repo_targets = crate::get_theater_repo_dir().join("theater_targets.json");
-    let paths = [
-        repo_targets,
-        std::path::PathBuf::from("/home/mortygotvr/repo/theater-scene/theater_targets.json"),
-        std::path::PathBuf::from("./theater_targets.json"),
-        std::path::PathBuf::from("theater_targets.json"),
-    ];
+    let paths = [crate::paths::file("theater_targets.json")];
 
     let mut loaded_sources = Vec::new();
     let mut loaded_sets = Vec::new();
@@ -5348,7 +5272,7 @@ pub fn save_targets_to_disk(sources: &[crate::StudioSource]) -> usize {
         }
     }
 
-    let path_buf = crate::get_theater_repo_dir().join("theater_targets.json");
+    let path_buf = crate::paths::file("theater_targets.json");
     let path = path_buf.to_str().unwrap_or("theater_targets.json");
     let mut existing_data = Vec::new();
     if let Ok(file) = std::fs::File::open(path) {
@@ -6045,7 +5969,7 @@ impl StudioApp {
                                                     .changed()
                                                 {
                                                     if deformed_glass {
-                                                        let smooth_tex = crate::get_theater_repo_dir().join("Trust/assets/textures/smooth_deformed_glass.png").to_string_lossy().to_string();
+                                                        let smooth_tex = crate::paths::texture("smooth_deformed_glass.png");
                                                         item.config.water_texture_path = Some(smooth_tex);
                                                         if item.config.water_texture_scale.is_none() {
                                                             item.config.water_texture_scale = Some(180.0);
@@ -6071,13 +5995,13 @@ impl StudioApp {
                                                         ui.label("  Surface Finish:");
                                                         let is_smooth = is_smooth_glass || !is_rippled_glass;
                                                         if ui.selectable_label(is_smooth, "✨ Ultra-Smooth Swells").clicked() {
-                                                            let smooth_tex = crate::get_theater_repo_dir().join("Trust/assets/textures/smooth_deformed_glass.png").to_string_lossy().to_string();
+                                                            let smooth_tex = crate::paths::texture("smooth_deformed_glass.png");
                                                             item.config.water_texture_path = Some(smooth_tex);
                                                             item.is_dirty = true;
                                                             self.redeem_editor_status = "Selected Ultra-Smooth Swell surface".to_string();
                                                         }
                                                         if ui.selectable_label(!is_smooth, "🌊 Rippled Glass").clicked() {
-                                                            let rippled_tex = crate::get_theater_repo_dir().join("Trust/assets/textures/deformed_glass.png").to_string_lossy().to_string();
+                                                            let rippled_tex = crate::paths::texture("deformed_glass.png");
                                                             item.config.water_texture_path = Some(rippled_tex);
                                                             item.is_dirty = true;
                                                             self.redeem_editor_status = "Selected Rippled Glass surface".to_string();
@@ -7656,17 +7580,10 @@ pub fn dispatch_test_redeem_json(json_str: &str) -> bool {
                 .unwrap_or("")
                 .to_string();
             if script.is_empty() || script == "(none selected)" {
-                let snow_repo = crate::get_theater_repo_dir().join("snow_storm.lua");
-                let candidates = [
-                    snow_repo,
-                    std::path::PathBuf::from("/home/mortygotvr/repo/theater-scene/snow_storm.lua"),
-                    std::path::PathBuf::from("snow_storm.lua"),
-                ];
-                for c in &candidates {
-                    if c.is_file() {
-                        script = c.to_string_lossy().to_string();
-                        break;
-                    }
+                // The shipped example
+                let snow = crate::paths::scripts_dir().join("snow_storm.lua");
+                if snow.is_file() {
+                    script = snow.to_string_lossy().to_string();
                 }
             }
 
@@ -7851,7 +7768,7 @@ mod tests {
             return;
         }
         for raw in [
-            "/home/mortygotvr/repo/theater-scene/filters/swirl.lua",
+            "/home/someone/theater-scene/filters/swirl.lua",
             "C:\\Somewhere\\else\\swirl.lua",
             "filters/swirl.lua",
         ] {
@@ -7892,7 +7809,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
 
     #[test]
     fn test_doom_script_declares_its_sliders() {
-        let doom = crate::get_theater_repo_dir().join("doom.lua");
+        let doom = crate::paths::scripts_dir().join("doom.lua");
         let Ok(src) = std::fs::read_to_string(&doom) else {
             return;
         };
@@ -7958,12 +7875,11 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn test_redeems_folder_is_in_the_repo_on_windows() {
+    fn test_redeems_folder_is_in_your_data() {
         let dir = get_redeems_dir();
         assert!(dir.is_absolute(), "must not depend on OBS's working directory: {dir:?}");
-        assert_eq!(dir, crate::get_theater_repo_dir().join("redeems"));
+        assert_eq!(dir, crate::paths::config_dir().join("redeems"));
     }
 
     #[test]
@@ -8443,7 +8359,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
             }
         ];
 
-        let path_buf = crate::get_theater_repo_dir().join("theater_targets.json");
+        let path_buf = crate::paths::file("theater_targets.json");
         let path = path_buf.to_str().unwrap_or("theater_targets.json");
         let existing_data: Vec<serde_json::Value> = std::fs::File::open(path)
             .ok()

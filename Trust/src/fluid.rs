@@ -608,7 +608,7 @@ impl SphConfig {
                 c.color_a = 0.75;
                 c.color2 = [0.60, 0.92, 1.0];
                 c.color2_a = 0.85;
-                c.water_visual.texture_path = Some(crate::get_theater_repo_dir().join("Trust/assets/textures/smooth_deformed_glass.png").to_string_lossy().to_string());
+                c.water_visual.texture_path = Some(crate::paths::texture("smooth_deformed_glass.png"));
                 c.water_visual.texture_scale = 180.0;
                 c.water_visual.texture_scroll_speed = 18.0;
                 c.water_visual.refraction_enabled = true;
@@ -1408,8 +1408,8 @@ mod tests {
 
     #[test]
     fn test_deformed_glass_texture_assets_and_refraction_independence() {
-        let smooth_path = "/home/mortygotvr/repo/theater-scene/Trust/assets/textures/smooth_deformed_glass.png";
-        let rippled_path = "/home/mortygotvr/repo/theater-scene/Trust/assets/textures/deformed_glass.png";
+        let smooth_path = &crate::paths::texture("smooth_deformed_glass.png");
+        let rippled_path = &crate::paths::texture("deformed_glass.png");
         assert!(std::path::Path::new(smooth_path).exists(), "Smooth deformed glass texture must exist");
         assert!(std::path::Path::new(rippled_path).exists(), "Rippled deformed glass texture must exist");
 

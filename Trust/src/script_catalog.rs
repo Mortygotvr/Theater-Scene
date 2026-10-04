@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn theaters_own_scripts_are_found_and_sorted_out() {
-        let dirs = [crate::studio_app::get_filters_dir(), crate::get_theater_repo_dir()];
+        let dirs = [crate::paths::filters_dir(), crate::paths::scripts_dir()];
         let catalog = scan(&dirs, &[]);
         let find = |name: &str| catalog.entries.iter().find(|e| e.name == name);
         if let Some(doom) = find("doom") {
