@@ -1,0 +1,204 @@
+-- ============================================================================
+-- 🚀 Theater Scene — Master Lua Bootstrapper (100% Configurable)
+-- ============================================================================
+-- Configure menus, windows, docks, and target scripts without compiling C++.
+-- Pure native Rust Scene Studio integration (Zero Lua studio dependency).
+-- ============================================================================
+
+-- Ensure package.path includes project directory
+if package and package.path then
+    if not package.path:find("/home/mortygotvr/repo/theater-scene/", 1, true) then
+        package.path = "/home/mortygotvr/repo/theater-scene/?.lua;./?.lua;" .. package.path
+    end
+end
+
+local ffi = require("ffi")
+pcall(function()
+    ffi.cdef[[
+        bool trust_init(void);
+        bool trust_register_obs_source(void);
+        void trust_studio_open_native_window(void);
+        bool trust_studio_load_targets_from_disk(void);
+    ]]
+end)
+
+local trust_lib = nil
+local paths = {
+    "/home/mortygotvr/.config/obs-studio/plugins/theater-scene/bin/64bit/libtrust.so",
+    "/home/mortygotvr/repo/theater-scene/Trust/target/release/libtrust.so",
+    "/home/mortygotvr/repo/theater-scene/libtrust.so",
+    "./libtrust.so",
+}
+for _, p in ipairs(paths) do
+    local ok, lib = pcall(ffi.load, p, true)
+    if ok and lib then
+        trust_lib = lib
+        break
+    end
+end
+
+pcall(function()
+    if trust_lib and trust_lib.trust_init then
+        trust_lib.trust_init()
+    elseif ffi.C.trust_init then
+        ffi.C.trust_init()
+    end
+end)
+
+-- C-FFI Definitions for Native Qt Menu Management
+pcall(function()
+    ffi.cdef[[
+        typedef void (*LuaBtnCallback)(void *user_data);
+        void trust_ui_set_menu_title(const char *menu_title);
+        void trust_ui_clear_menu(void);
+        void trust_ui_add_menu_action(const char *action_title, LuaBtnCallback callback, void *user_data);
+    ]]
+end)
+
+local _menu_cb_anchors = {}
+local trust_qt = nil
+local function get_qt_lib()
+    if trust_qt then return trust_qt end
+
+    -- 1. Try ffi.C if already linked in OBS process
+    local ok_c, _ = pcall(function() return ffi.C.trust_ui_set_menu_title end)
+    if ok_c and ffi.C.trust_ui_set_menu_title ~= nil then
+        trust_qt = ffi.C
+        return trust_qt
+    end
+
+    -- 2. Try the exact plugin binary loaded by OBS
+    local plugin_path = "/home/mortygotvr/.config/obs-studio/plugins/theater-scene/bin/64bit/theater-scene.so"
+    local ok_p, lib_p = pcall(ffi.load, plugin_path, true)
+    if ok_p and lib_p then
+        trust_qt = lib_p
+        return trust_qt
+    end
+
+    -- 3. Fallback search paths
+    local paths = {
+        "/home/mortygotvr/.config/obs-studio/plugins/theater-scene/bin/64bit/libtrust_qt.so",
+        "/home/mortygotvr/repo/theater-scene/libtrust_qt.so",
+        "/home/mortygotvr/repo/theater-scene/Trust/target/release/libtrust_qt.so",
+        "./libtrust_qt.so",
+    }
+    for _, p in ipairs(paths) do
+        local ok, lib = pcall(ffi.load, p, true)
+        if ok and lib then
+            trust_qt = lib
+            return trust_qt
+        end
+    end
+    return nil
+end
+
+local function set_menu_title(title)
+    local lib = get_qt_lib()
+    if lib and lib.trust_ui_set_menu_title then
+        lib.trust_ui_set_menu_title(title or "🎬 Theater Scene")
+    end
+end
+
+local function clear_menu()
+    local lib = get_qt_lib()
+    if lib and lib.trust_ui_clear_menu then
+        lib.trust_ui_clear_menu()
+    end
+end
+
+local function add_menu_action(title, callback)
+    local lib = get_qt_lib()
+    if not lib or not callback then return end
+    local cb_anchor = ffi.cast("LuaBtnCallback", function(udata)
+        local ok, err = pcall(callback)
+        if not ok then
+            print("[Bootstrap] ❌ Error in menu callback for '" .. tostring(title) .. "': " .. tostring(err))
+        end
+    end)
+    table.insert(_menu_cb_anchors, cb_anchor)
+    if lib.trust_ui_add_menu_action then
+        lib.trust_ui_add_menu_action(title, cb_anchor, nil)
+    end
+end
+
+-- Function to configure the Main OBS Menu cleanly
+local function setup_theater_menus()
+    pcall(function()
+        set_menu_title("🎬 Theater Scene")
+        clear_menu()
+
+        -- Menu Item 1: 🎬 Scene Studio Window (Pure Native Rust)
+        add_menu_action("🎬 Scene Studio Window", function()
+            print("[Bootstrap] 🎬 Opening Scene Studio Window (Pure Rust egui)...")
+            local opened = false
+            if trust_lib and trust_lib.trust_studio_open_native_window then
+                local ok, err = pcall(trust_lib.trust_studio_open_native_window)
+                if ok then opened = true end
+            end
+            if not opened then
+                local ok_c, fn_c = pcall(function() return ffi.C.trust_studio_open_native_window end)
+                if ok_c and fn_c ~= nil then
+                    local ok, err = pcall(fn_c)
+                    if ok then opened = true end
+                end
+            end
+            if not opened then
+                print("[Bootstrap] ❌ Error: trust_studio_open_native_window symbol not found in Trust library.")
+            end
+        end)
+
+        print("[Bootstrap] 🚀 Theater Scene menus configured successfully.")
+    end)
+end
+
+-- ============================================================================
+-- 🔌 OBS Lua Script Lifecycle Callbacks
+-- ============================================================================
+
+function script_description()
+    return "🎬 <b>Theater Scene — Master Bootstrapper</b><br/>" ..
+           "Configures menus, scene targets, and runs the Scene Studio & physics bridge.<br/>" ..
+           "<i>Works automatically on OBS launch and script reload!</i>"
+end
+
+local function ensure_targets_loaded()
+    pcall(function()
+        if trust_lib and trust_lib.trust_studio_load_targets_from_disk then
+            trust_lib.trust_studio_load_targets_from_disk()
+        elseif ffi.C.trust_studio_load_targets_from_disk then
+            ffi.C.trust_studio_load_targets_from_disk()
+        end
+    end)
+end
+
+function script_load(settings)
+    print("[Bootstrap] 🔄 script_load triggered. Setting up Theater Scene...")
+    setup_theater_menus()
+    ensure_targets_loaded()
+end
+
+function script_unload()
+    print("[Bootstrap] 🛑 script_unload triggered.")
+    pcall(function()
+        clear_menu()
+        _menu_cb_anchors = {}
+    end)
+end
+
+function script_tick(seconds)
+end
+
+-- If OBS frontend is still initializing on cold start, ensure menus configure once frontend finishes loading
+if obs and obs.obs_frontend_add_event_callback then
+    obs.obs_frontend_add_event_callback(function(event)
+        if event == obs.OBS_FRONTEND_EVENT_FINISHED_LOADING then
+            print("[Bootstrap] 🎬 OBS finished loading. Initializing menus and targets...")
+            setup_theater_menus()
+            ensure_targets_loaded()
+        end
+    end)
+end
+
+-- Configure immediately for runtime loads / reloads
+setup_theater_menus()
+ensure_targets_loaded()

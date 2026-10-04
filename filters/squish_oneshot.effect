@@ -1,0 +1,67 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float time;
+uniform float squish_amount;
+uniform float squish_speed;
+uniform float scale_factor;
+
+sampler_state textureSampler {
+    Filter    = Linear;
+    AddressU  = Border;
+    AddressV  = Border;
+    BorderColor = 00000000;
+};
+
+struct VertData {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VertOut {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertOut VSDefault(VertData v_in) {
+    VertOut vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv  = v_in.uv;
+    return vert_out;
+}
+
+float4 PSDefault(VertOut v_in) : TARGET {
+    float2 uv = v_in.uv;
+
+    // Calculate squash factors (using a damped sine wave so it bounces then settles)
+    float phase = time * squish_speed;
+    float max_phase = 18.8495559; // 3 full wobble cycles (6 * PI)
+    float squash = 0.0;
+
+    if (phase < max_phase) {
+        // Damping causes the bounce to lose momentum and stop exactly at 0
+        float damping = 1.0 - (phase / max_phase);
+
+        // Use an ease-out square of the damping so it snaps back to rest smoothly
+        squash = sin(phase) * squish_amount * (damping * damping);
+    }
+
+    // Width scales by (1 + squash)
+    // Height scales inversely (1 / width) to maintain physics volume.
+    float sq_x = 1.0 + squash;
+    float sq_y = 1.0 / max(sq_x, 0.001);
+
+    // Apply squish/stretch anchored right at the bottom center (0.5, 1.0)
+    uv.x = 0.5 + (uv.x - 0.5) / max(sq_x, 0.001);
+    uv.y = 1.0 + (uv.y - 1.0) / max(sq_y, 0.001);
+
+    float4 color = image.Sample(textureSampler, uv);
+    return color;
+}
+
+technique Draw {
+    pass {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader  = PSDefault(v_in);
+    }
+}

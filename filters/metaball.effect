@@ -1,0 +1,312 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+// Single accumulated field texture (alpha channel = summed particle influence,
+// built by additively drawing a soft round glow sprite per particle into an
+// offscreen buffer before this pass runs).
+uniform float4 fluid_color;
+uniform float threshold;
+uniform float edge_softness;
+uniform float outline_width;
+uniform float noise_strength;
+uniform float noise_scale;
+uniform float time;
+uniform float resolution_x;
+uniform float resolution_y;
+// Average particle velocity direction for this group — lets the ripple
+// pattern "comb" along the stream instead of looking like isotropic blobs,
+// and orients the flow-aligned basis used for the wave-like surface noise.
+uniform float flow_dir_x;
+uniform float flow_dir_y;
+// When > 0.5, the silhouette's edge-wobble noise is smooth/round instead of
+// sharpened into pointed spikes/cusps.
+uniform float round_edge;
+
+// A snapshot of the scene behind the water (captured just before this draw),
+// sampled at a warped coordinate so the interior shows a genuinely distorted
+// view of what's actually there instead of a flat tinted fill — real visual
+// distortion rather than a fake lighting trick. has_backdrop is 0 when the
+// capture wasn't available (older libobs, or nothing bound yet), in which
+// case the shader falls back to the flat-tinted look.
+uniform texture2d backdrop;
+uniform float has_backdrop;
+uniform float refract_strength;
+uniform float refraction_enabled;
+
+// Optional custom image (shared across every water redeem) that replaces
+// the procedural surface-bump noise below entirely when set — its
+// luminance is sampled as a height field the same way the noise is.
+// has_water_tex is 0 when no image is configured, falling back to noise.
+uniform texture2d water_tex;
+uniform float has_water_tex;
+uniform float water_tex_scale;
+uniform float water_tex_scroll_speed;
+
+sampler_state textureSampler {
+    Filter    = Linear;
+    AddressU  = Clamp;
+    AddressV  = Clamp;
+};
+
+sampler_state backdropSampler {
+    Filter    = Linear;
+    AddressU  = Clamp;
+    AddressV  = Clamp;
+};
+
+sampler_state waterTexSampler {
+    Filter    = Linear;
+    AddressU  = Wrap;
+    AddressV  = Wrap;
+};
+
+struct VertData {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VertOut {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertOut VSDefault(VertData v_in) {
+    VertOut vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv  = v_in.uv;
+    return vert_out;
+}
+
+float hash(float2 p) {
+    p = frac(p * float2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return frac(p.x * p.y);
+}
+
+float value_noise(float2 p) {
+    float2 i = floor(p);
+    float2 f = frac(p);
+    float a = hash(i);
+    float b = hash(i + float2(1.0, 0.0));
+    float c = hash(i + float2(0.0, 1.0));
+    float d = hash(i + float2(1.0, 1.0));
+    float2 u = f * f * (3.0 - 2.0 * f);
+    float ab = a + (b - a) * u.x;
+    float cd = c + (d - c) * u.x;
+    return ab + (cd - ab) * u.y;
+}
+
+// Three octaves so the ripple pattern reads as layered wave/splash detail
+// instead of one smooth blobby wobble.
+float fbm(float2 p) {
+    float f = value_noise(p) * 0.6;
+    f += value_noise(p * 2.3 + float2(11.0, 4.0)) * 0.3;
+    f += value_noise(p * 5.1 - float2(7.0, 2.0)) * 0.1;
+    return f;
+}
+
+float sample_field(float2 uv) {
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return 0.0;
+    }
+    return image.Sample(textureSampler, uv).a;
+}
+
+// Luminance of the custom water texture at `uv`, treated as a height field —
+// wraps (tiles) so it covers an arbitrarily long/wide stream.
+float sample_water_tex_height(float2 uv) {
+    float3 c = water_tex.Sample(waterTexSampler, uv).rgb;
+    return dot(c, float3(0.299, 0.587, 0.114));
+}
+
+float4 PSDefault(VertOut v_in) : TARGET {
+    float2 resolution = float2(max(resolution_x, 1.0), max(resolution_y, 1.0));
+    float2 px = v_in.uv * resolution;
+
+    float2 flow_raw = float2(flow_dir_x, flow_dir_y);
+    float flow_len = length(flow_raw);
+    float2 flow_n = flow_len > 0.001 ? flow_raw / flow_len : float2(0.0, 1.0);
+    float2 flow_perp = float2(-flow_n.y, flow_n.x);
+
+    // Sample noise in a basis aligned to the stream's flow direction, and
+    // stretch it — long ridges running along the flow, tighter ripples
+    // across it — plus a sharpening pass (squaring the signed noise) so the
+    // silhouette gets pointed, spiky splash tips instead of just soft round
+    // wobbles, closer to a stylized "anime splash" outline.
+    float2 flow_space = float2(dot(px, flow_n), dot(px, flow_perp));
+    float2 wave_coord = float2(flow_space.x / max(noise_scale * 2.2, 1.0), flow_space.y / max(noise_scale * 0.6, 1.0));
+    float n1 = fbm(wave_coord + float2(0.0, time * 0.6)) - 0.5;
+    float n2 = fbm(wave_coord * 1.7 - float2(0.0, time * 0.9) + 31.0) - 0.5;
+    // Just removing the sharpening still left a fairly wavy (if less
+    // pointed) edge, since the warp amplitude itself was unchanged — the
+    // underlying metaball field is naturally round on its own (it's built
+    // from fused circles), so "round" needs the edge warp pulled WAY down
+    // too, not just de-sharpened, to actually let that natural round shape
+    // show through instead of still being visibly wobbled.
+    float edge_warp_scale = noise_strength;
+    if (round_edge > 0.5) {
+        n1 = n1 * 2.0;
+        n2 = n2 * 2.0;
+        edge_warp_scale = noise_strength * 0.12;
+    } else {
+        // Squaring (while preserving sign) sharpens soft noise into pointed
+        // spikes/cusps — a closer match to jagged, stylized splash silhouettes
+        // than the smooth wobble plain noise gives.
+        n1 = n1 * abs(n1) * 4.0;
+        n2 = n2 * abs(n2) * 4.0;
+    }
+    float2 warp = (flow_n * n1 + flow_perp * n2) * edge_warp_scale;
+
+    float2 sample_uv = (px + warp) / resolution;
+    float field = sample_field(sample_uv);
+
+    // Outline threshold sits a bit below the fill threshold — the field band
+    // between the two is the toon outline stroke; below it is fully clear.
+    float outline_edge = smoothstep(threshold - outline_width - edge_softness, threshold - outline_width + edge_softness, field);
+    if (outline_edge <= 0.001) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    float fill_edge = smoothstep(threshold - edge_softness, threshold + edge_softness, field);
+
+    // Posterized (not smooth) shading bands from the field's local gradient
+    // acting as a fake "facing the light" term — a flat cel-shaded look
+    // needs a handful of discrete tones, not a continuous ramp.
+    float step_px = 2.0;
+    float f_xp = sample_field(sample_uv + float2(step_px, 0.0) / resolution);
+    float f_xn = sample_field(sample_uv - float2(step_px, 0.0) / resolution);
+    float f_yp = sample_field(sample_uv + float2(0.0, step_px) / resolution);
+    float f_yn = sample_field(sample_uv - float2(0.0, step_px) / resolution);
+    float dfx = (f_xp - f_xn) / (2.0 * step_px);
+    float dfy = (f_yp - f_yn) / (2.0 * step_px);
+
+    // The macro field is deliberately a wide, flat-topped plateau (needed so
+    // particles fuse into one shape instead of showing as separate beads),
+    // so dfx/dfy above stay near zero across most of the interior — real,
+    // but only visible right at the silhouette edge. That read as "the
+    // middle is flat". Add an independent small-scale ripple pattern (not
+    // derived from the field at all, so it's just as present deep inside the
+    // shape as at its edge) and fold its own tiny gradient into the normal
+    // too, for a genuine bumpy/textured surface everywhere, not just at the
+    // boundary.
+    // No procedural fallback texture — a made-up placeholder pattern isn't
+    // wanted here. Without a real custom image, the interior just uses the
+    // macro field's own (subtle, edge-only) shading via dfx/dfy above; a
+    // custom image is the only thing that adds extra surface detail.
+    float ddx = 0.0;
+    float ddy = 0.0;
+    if (has_water_tex > 0.5) {
+        // Custom image drives the surface bump pattern, sampled (and tiled)
+        // as an active, living height field.
+        // To make the deformed glass look dynamically in motion rather than
+        // sliding like a rigid sheet, we combine:
+        // 1. Organic domain warping (wave harmonic distortion)
+        // 2. Dual-layer cross-drifting wave interference (differential speed & scale)
+        float tex_scale = max(water_tex_scale, 1.0);
+        float spd = water_tex_scroll_speed;
+
+        // Primary flowing layer (downward drift with organic harmonic wave warp)
+        float2 base_coord1 = (px - float2(0.0, time * spd)) / tex_scale;
+        float2 warp1 = float2(
+            sin(base_coord1.y * 3.14159 + time * 1.6) * 0.045,
+            cos(base_coord1.x * 3.14159 + time * 1.3) * 0.045
+        );
+        float2 uv1 = base_coord1 + warp1;
+
+        // Secondary cross-layer (scaled and drifting at differential angle & speed)
+        // Interference between layer 1 and 2 creates continuously morphing glass facets
+        float2 base_coord2 = (px * 1.28 + float2(time * spd * 0.35, -time * spd * 0.7)) / tex_scale;
+        float2 warp2 = float2(
+            cos(base_coord2.y * 2.6 + time * 1.1) * 0.035,
+            sin(base_coord2.x * 2.6 - time * 1.4) * 0.035
+        );
+        float2 uv2 = base_coord2 + warp2;
+
+        float step_t = 2.0 / tex_scale;
+
+        // Sample layer 1 (central difference for smooth, continuous derivative)
+        float h1_xp = sample_water_tex_height(uv1 + float2(step_t, 0.0));
+        float h1_xn = sample_water_tex_height(uv1 - float2(step_t, 0.0));
+        float h1_yp = sample_water_tex_height(uv1 + float2(0.0, step_t));
+        float h1_yn = sample_water_tex_height(uv1 - float2(0.0, step_t));
+
+        // Sample layer 2 (central difference)
+        float h2_xp = sample_water_tex_height(uv2 + float2(step_t, 0.0));
+        float h2_xn = sample_water_tex_height(uv2 - float2(step_t, 0.0));
+        float h2_yp = sample_water_tex_height(uv2 + float2(0.0, step_t));
+        float h2_yn = sample_water_tex_height(uv2 - float2(0.0, step_t));
+
+        // Combine derivatives (65% primary layer, 35% cross-layer)
+        float ddx1 = (h1_xp - h1_xn) * 0.5;
+        float ddy1 = (h1_yp - h1_yn) * 0.5;
+        float ddx2 = (h2_xp - h2_xn) * 0.5;
+        float ddy2 = (h2_yp - h2_yn) * 0.5;
+
+        ddx = ddx1 * 0.65 + ddx2 * 0.35;
+        ddy = ddy1 * 0.65 + ddy2 * 0.35;
+    }
+    float detail_strength = 5.0;
+
+    float3 normal = normalize(float3(
+        -dfx * 55.0 - ddx * detail_strength,
+        -dfy * 55.0 - ddy * detail_strength,
+        1.0
+    ));
+    // World/screen Y increases DOWNWARD in this project's coordinate
+    // convention, so a light meant to come from "above" needs a NEGATIVE Y
+    // component here, not positive — that sign was backwards before.
+    float3 light_dir = normalize(float3(-0.4, -0.6, 0.65));
+    float ndotl = max(dot(normal, light_dir), 0.0);
+
+    // Continuous, silky smooth shading instead of stepped facet bands
+    float diffuse = 0.70 + 0.30 * ndotl;
+    float specular = pow(ndotl, 14.0) * 0.85;
+
+    float3 flat_body_color = fluid_color.rgb * diffuse + float3(specular, specular, specular);
+    float3 body_color = flat_body_color;
+
+    if (has_backdrop > 0.5) {
+        // Real optical refraction & deformation:
+        // Combine the small-scale deformed glass ripple gradient (ddx, ddy)
+        // with the fluid metaball's macro curvature gradient (dfx, dfy).
+        // Scaling gives clean, subtle optical displacement (~10-30px max)
+        // without dragging distant foreign elements into the stream.
+        float glass_warp = refract_strength * 0.08;
+        float macro_warp = refract_strength * 0.04;
+        float2 refract_px = float2(ddx, ddy) * glass_warp + float2(dfx, dfy) * macro_warp;
+        float2 refract_uv = clamp(v_in.uv + refract_px / resolution, 0.0, 1.0);
+
+        // Sample backdrop directly to preserve 100% authentic background colors.
+        // No unnormalized channel dispersion offsets that corrupt RGB colors.
+        float3 refracted = backdrop.Sample(backdropSampler, refract_uv).rgb;
+
+        // When optical refraction is disabled (clear deformation mode),
+        // pass the background through completely uncolored and unshaded.
+        // When optical refraction is enabled, tint according to fluid color opacity.
+        float3 tint = fluid_color.rgb;
+        float color_intensity = (refraction_enabled > 0.5) ? clamp(fluid_color.a, 0.0, 0.85) : 0.0;
+        float3 transmitted = refracted * lerp(float3(1.0, 1.0, 1.0), tint, color_intensity);
+
+        float body_blend = (refraction_enabled > 0.5) ? clamp(fluid_color.a * 0.5, 0.0, 0.70) : 0.0;
+        float3 dyed_fluid = tint * diffuse;
+
+        // Transmitted background is NOT multiplied by diffuse front-lighting,
+        // preventing wave ripples from darkening and muddying the colors.
+        body_color = lerp(transmitted, dyed_fluid, body_blend) + float3(specular, specular, specular);
+    }
+
+    float3 outline_color = float3(1.0, 1.0, 1.0);
+    float3 rgb = outline_color + (body_color - outline_color) * fill_edge;
+
+    // When refraction is active, the interior (fill_edge) renders with full
+    // opacity so the deformed refracted view directly replaces the undeformed
+    // scene beneath, preventing flat ghosting / double-vision.
+    float effective_alpha = (has_backdrop > 0.5) ? lerp(fluid_color.a, 1.0, fill_edge) : fluid_color.a;
+    return float4(rgb, outline_edge * effective_alpha);
+}
+
+technique Draw {
+    pass {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader  = PSDefault(v_in);
+    }
+}

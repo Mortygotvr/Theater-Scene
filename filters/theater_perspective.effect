@@ -1,0 +1,62 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float tilt_x;
+uniform float tilt_y;
+uniform float pivot_x;
+uniform float pivot_y;
+uniform float scale_factor;
+
+sampler_state textureSampler {
+    Filter   = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertData {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in) {
+    VertData vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv = v_in.uv;
+    return vert_out;
+}
+
+float4 PSDefault(VertData v_in) : TARGET {
+    // Center the UV coordinates around the pivot
+    float2 dist = v_in.uv - float2(pivot_x, pivot_y);
+    
+    // Calculate perspective depth using the unscaled distance 
+    // (so the overall tilt stays consistent even if you zoom in/out)
+    float perspective = 1.0 + (dist.x * tilt_y) + (dist.y * tilt_x);
+    
+    if (perspective <= 0.001) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    
+    // Apply the scaling factor *only* to the UV coordinates being sampled
+    dist /= scale_factor;
+    
+    // Apply the 3D perspective depth to those scaled coordinates
+    dist /= perspective;
+    
+    // Move UVs back to their absolute position
+    float2 new_uv = float2(pivot_x, pivot_y) + dist;
+    
+    // Clip anything outside the original 0-1 bounds of the texture
+    if (new_uv.x < 0.0 || new_uv.x > 1.0 || new_uv.y < 0.0 || new_uv.y > 1.0) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+
+    return image.Sample(textureSampler, new_uv);
+}
+
+technique Draw {
+    pass p0 {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader  = PSDefault(v_in);
+    }
+}

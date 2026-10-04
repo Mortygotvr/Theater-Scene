@@ -1,0 +1,40 @@
+[package]
+name = "trust"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+# What Theater Reader (its own repo, Theater-Reader) uses too: the
+# platforms, trigger patterns and lists, and the channels seen. Clone
+# Theater-Shared next to this repo
+theater_shared = { path = "../../Theater-Shared" }
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+base64 = "0.22"
+egui = "0.31"
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+winit = { version = "0.30", default-features = false, features = ["x11", "wayland"] }
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
+# Redeem packages (.red): a zip of a redeem and the files it uses
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Rhai filters (script_filters): OBS filters written as .rhai scripts
+rhai = { version = "1", features = ["sync"] }
+# Text for Rhai sources (script_draw): the font rasterizer egui already uses
+ab_glyph = "0.2"
+
+# Redeem sounds, played as the Throwables Layer's audio: Media Foundation
+# decodes them (MP3, WAV, AAC…)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }
+# OGG Vorbis, which Media Foundation doesn't read here
+lewton = "0.10"

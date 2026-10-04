@@ -1,0 +1,58 @@
+# Python runtime & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# IDE and Tooling
+.vscode/
+.clinerules
+.cursorrules
+
+# Build outputs & caches
+build/
+dist/
+web_cache/
+web_storage/
+*.spec
+*.7z
+
+# Temporary debug images
+debug_*.png
+
+# Old JavaScript Theater Scene repository (GitHub Mortygotvr/theater-scene), kept aside
+.git-old-js-version/
+
+# Rust (Trust) build outputs
+Trust/target/
+*.dll
+*.so
+*.so.bak*
+*.dll.bak*
+*.pdb
+
+# Import libraries generated from OBS's DLLs by Trust/gen_libs.ps1
+Trust/obs_libs/*.lib
+Trust/obs_libs/*.exp
+
+# Your own data: poses, redeems and settings stay on this PC, out of the repo
+# (Theater still reads them from this folder)
+theater_targets.json
+theater_targets.json.*
+theater_last_pose.txt
+theater_settings.json
+theater_reader.json
+theater_reader_seen.json
+theater_script_folders.json
+theater_removed_effects.json
+theater.json
+redeems/
+# Pictures cached by the old chat (nothing uses them now)
+assets/chat_cache/
+Trust/assets/chat_cache/
+# Someone else's reference code (has an API key in it)
+C# reference/

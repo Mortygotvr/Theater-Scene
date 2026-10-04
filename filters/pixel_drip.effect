@@ -1,0 +1,58 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float time;
+uniform float drip_speed;
+uniform float randomness;
+uniform float scale_factor;
+
+sampler_state textureSampler {
+    Filter    = Linear;
+    AddressU  = Border;
+    AddressV  = Border;
+    BorderColor = 00000000;
+};
+
+struct VertData {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+struct VertOut {
+    float4 pos : POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VertOut VSDefault(VertData v_in) {
+    VertOut vert_out;
+    vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    vert_out.uv  = v_in.uv;
+    return vert_out;
+}
+
+// Simple hash for pseudo-randomness per column
+float hash(float x) {
+    return frac(sin(x * 91.3458) * 47453.5453);
+}
+
+float4 PSDefault(VertOut v_in) : TARGET {
+    float2 uv = v_in.uv;
+    // Per-column randomness
+    float col_rand = hash(uv.x * 1000.0) * randomness;
+    // Drip progress for this column
+    float drip = min(1.0, (time * drip_speed) + col_rand);
+
+    // OBS y is inverted: to drip visually DOWN, move toward y=0 (top)
+    float new_y = uv.y - drip * uv.y;
+    float2 drip_uv = float2(uv.x, new_y);
+
+    float4 color = image.Sample(textureSampler, drip_uv);
+    return color;
+}
+
+technique Draw {
+    pass {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader  = PSDefault(v_in);
+    }
+}
