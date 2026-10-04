@@ -40,17 +40,18 @@ Trust/obs_libs/*.lib
 Trust/obs_libs/*.exp
 
 # Your own data: poses, redeems and settings stay on this PC, out of the repo
-# (Theater still reads them from this folder)
-theater_targets.json
-theater_targets.json.*
-theater_last_pose.txt
-theater_settings.json
-theater_reader.json
-theater_reader_seen.json
-theater_script_folders.json
-theater_removed_effects.json
-theater.json
-redeems/
+# (from 0.1.0 Theater keeps them in plugin_config\theater-scene; these are the
+# old copies it imported once)
+/theater_targets.json
+/theater_targets.json.*
+/theater_last_pose.txt
+/theater_settings.json
+/theater_reader.json
+/theater_reader_seen.json
+/theater_script_folders.json
+/theater_removed_effects.json
+/theater.json
+/redeems/
 # Pictures cached by the old chat (nothing uses them now)
 assets/chat_cache/
 Trust/assets/chat_cache/

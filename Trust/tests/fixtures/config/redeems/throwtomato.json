@@ -1,0 +1,12 @@
+{
+  "name": "Throw Tomato",
+  "version": "1.0",
+  "type": "image",
+  "target": "Avatar",
+  "action": "throwable",
+  "collision": "bounce",
+  "speed": 8.0,
+  "scale": 1.0,
+  "gravity": 0.8,
+  "amount": "1"
+}

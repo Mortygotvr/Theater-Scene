@@ -1,0 +1,38 @@
+[
+  {
+    "current_xform": { "height": 400.0, "pitch": 0.0, "roll": 0.0, "width": 300.0, "x": 800.0, "y": 400.0, "yaw": 0.0 },
+    "custom": { "height": 400.0, "pitch": 0.0, "roll": 0.0, "width": 300.0, "x": 800.0, "y": 400.0, "yaw": 0.0 },
+    "default_xform": { "height": 400.0, "pitch": 0.0, "roll": 0.0, "width": 300.0, "x": 800.0, "y": 400.0, "yaw": 0.0 },
+    "match_obs": false,
+    "name": "Fixture Avatar",
+    "scene": "Scène",
+    "slot": 1,
+    "source_name": "Fixture Avatar",
+    "target": true,
+    "visible": true
+  },
+  {
+    "current_xform": { "height": 1080.0, "pitch": 0.0, "roll": 0.0, "width": 1920.0, "x": 0.0, "y": 0.0, "yaw": 0.0 },
+    "custom": { "height": 1080.0, "pitch": 0.0, "roll": 0.0, "width": 1920.0, "x": 0.0, "y": 0.0, "yaw": 0.0 },
+    "default_xform": { "height": 1080.0, "pitch": 0.0, "roll": 0.0, "width": 1920.0, "x": 0.0, "y": 0.0, "yaw": 0.0 },
+    "match_obs": true,
+    "name": "Fixture Background",
+    "scene": "Scène",
+    "slot": 2,
+    "source_name": "Fixture Background",
+    "target": false,
+    "visible": true
+  },
+  {
+    "current_xform": { "height": 227.0, "pitch": 0.0, "roll": 0.0, "width": 217.0, "x": 298.0, "y": 751.0, "yaw": 0.0 },
+    "custom": { "height": 227.0, "pitch": 0.0, "roll": 0.0, "width": 217.0, "x": 298.0, "y": 751.0, "yaw": 0.0 },
+    "default_xform": { "height": 227.0, "pitch": 0.0, "roll": 0.0, "width": 217.0, "x": 298.0, "y": 751.0, "yaw": 0.0 },
+    "match_obs": true,
+    "name": "Image 3",
+    "scene": "Scène",
+    "slot": 5,
+    "source_name": "Image 3",
+    "target": true,
+    "visible": true
+  }
+]
