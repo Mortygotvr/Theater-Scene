@@ -93,6 +93,7 @@ fn properties() {
     [
         info("Chat from the relay (Theater Reader / Streamer Alert Relay), drawn by Theater: no browser needed."),
         button("test", "💬 Send a test message"),
+        button("copy_vf", "📋 Copy this look for VTuber Friends (the Twitch extension)"),
         text("overlay_url", "Old overlay link (chat_overlay.html#…): paste it to copy its look"),
         info("Its colours, font, layout, bubbles and borders become the settings below (change them after if you like). To copy it again, clear the field and paste it again."),
         choice("preset", "Theme", [["Glass", "glass"], ["Cyberpunk", "cyberpunk"], ["Midnight", "midnight"], ["Terminal", "terminal"], ["Glow", "glow"]]),
@@ -1055,7 +1056,24 @@ fn test_messages() {
     ]
 }
 
+// This chat's look as a code for VTuber Friends, the Twitch extension: pasted
+// in its settings ("Import from Theater"), its cards look like this chat
+fn vf_look_code(s) {
+    let look = #{
+        vf_look: 1, font: text_of(s.font), size: num(s.fontsize),
+        bg: s.bg, bg_mode: text_of(s.body_color_mode), text: s.msg_color, name: s.user_color, name_mode: text_of(s.username_color_mode),
+        weight: num(s.font_weight_user), radius: num(s.border_radius),
+        border: [num(s.border_top), num(s.border_right), num(s.border_bottom), num(s.border_left)], border_color: s.border_color,
+        shadow: s.shadow == true, bubble: text_of(s.bubble_style), opacity: num(s.global_opacity),
+    };
+    "VTF-LOOK " + look.to_json()
+}
+
 fn on_button(key) {
+    if key == "copy_vf" {
+        if copy_text(vf_look_code(this.settings)) { log("Copied this look for VTuber Friends: paste it in the extension's settings, Import from Theater"); }
+        return;
+    }
     if key == "test" {
         let list = test_messages();
         this.tests = (this.tests ?? 0) + 1;

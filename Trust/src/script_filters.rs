@@ -543,6 +543,8 @@ pub fn engine() -> &'static Engine {
                 .collect()
         });
         // A sound through the Throwables Layer (decoded on a thread of its own)
+        // Text to the clipboard (a button: "copy this look…")
+        engine.register_fn("copy_text", copy_text);
         engine.register_fn("play_sound", |path: &str| play_sound(path, 1.0));
         engine.register_fn("play_sound", |path: &str, volume: f64| play_sound(path, volume));
         engine.register_fn("play_sound", |path: &str, volume: i64| play_sound(path, volume as f64));
@@ -550,6 +552,55 @@ pub fn engine() -> &'static Engine {
         crate::script_docks::register(&mut engine);
         engine
     })
+}
+
+/// Puts `text` on the clipboard (a script's button: "copy this look…"). True
+/// when it's there. Windows only (elsewhere: false).
+fn copy_text(text: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        unsafe extern "system" {
+            fn OpenClipboard(owner: *mut c_void) -> i32;
+            fn EmptyClipboard() -> i32;
+            fn SetClipboardData(format: u32, data: *mut c_void) -> *mut c_void;
+            fn CloseClipboard() -> i32;
+            fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
+            fn GlobalLock(mem: *mut c_void) -> *mut c_void;
+            fn GlobalUnlock(mem: *mut c_void) -> i32;
+            fn GlobalFree(mem: *mut c_void) -> *mut c_void;
+        }
+        const CF_UNICODETEXT: u32 = 13;
+        const GMEM_MOVEABLE: u32 = 0x0002;
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) == 0 {
+                return false;
+            }
+            EmptyClipboard();
+            let mem = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2);
+            let mut ok = false;
+            if !mem.is_null() {
+                let p = GlobalLock(mem) as *mut u16;
+                if !p.is_null() {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+                    GlobalUnlock(mem);
+                    // The clipboard owns it once it's set
+                    ok = !SetClipboardData(CF_UNICODETEXT, mem).is_null();
+                }
+                if !ok {
+                    GlobalFree(mem);
+                }
+            }
+            CloseClipboard();
+            ok
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = text;
+        false
+    }
 }
 
 /// Plays `path` (relative: from the calling script's folder); false when
@@ -3066,6 +3117,18 @@ mod tests {
         // A test alert gets no banner
         thanks.event(r#"{"type":"alert","alert":{"kind":"donation","platform":"kofi","user":"Tester","amount":5,"test":true}}"#);
         assert!(!texts(&thanks.frame(1.0)).join("|").contains("Tester"));
+    }
+
+    #[test]
+    fn the_chats_give_their_look_to_vtuber_friends() {
+        for file in ["theater_chat.rhai", "legacy_chat.rhai"] {
+            let Some(chat) = Chat::load(file) else { continue };
+            let code = call(&chat.compiled, None, "vf_look_code", (Dynamic::from_map(chat.settings.clone()),)).unwrap().into_string().unwrap();
+            let json = code.strip_prefix("VTF-LOOK ").unwrap_or_else(|| panic!("{file}: {code}"));
+            let look: serde_json::Value = serde_json::from_str(json).unwrap_or_else(|e| panic!("{file}: {e}: {json}"));
+            assert_eq!(look["vf_look"], 1, "{file}");
+            assert!(look["font"].is_string() && look["bg"].is_i64() && look["border"].as_array().map(|b| b.len()) == Some(4), "{file}: {look}");
+        }
     }
 
     fn texts(cmds: &[crate::script_draw::Cmd]) -> Vec<String> {
