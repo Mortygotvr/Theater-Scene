@@ -3044,6 +3044,30 @@ mod tests {
         assert!(!before.is_empty() && before.iter().zip(&after).filter(|(b, a)| *a < *b).count() > before.len() / 2, "{before:?} → {after:?}");
     }
 
+    #[test]
+    fn legacy_thanks_gives_a_new_supporter_a_banner_with_the_light_bar_and_lightning() {
+        use crate::script_draw::Cmd;
+        let Some(mut thanks) = Chat::load("legacy_thanks.rhai") else { return };
+        thanks.event(r#"{"type":"alert","alert":{"kind":"pledge","platform":"patreon","user":"NewPatron","tier":"Gold","amount":10}}"#);
+        // It comes: the lightning across it, the banner shown from the bar
+        let early = thanks.frame(0.05);
+        assert!(early.iter().any(|c| matches!(c, Cmd::Line { points, .. } if points.len() >= 5)), "the lightning bolt");
+        let words = texts(&thanks.frame(1.5)).join("|");
+        assert!(words.contains("Thank you, NewPatron!") && words.contains("Patreon · Gold"), "{words}");
+        // Gone after its seconds; the new patron rolls in the credits
+        thanks.update(&[("speed", Dynamic::from_float(400.0))]);
+        let words = texts(&thanks.frame(5.0)).join("|");
+        assert!(!words.contains("Thank you, NewPatron!"), "{words}");
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            seen.extend(texts(&thanks.frame(0.5)));
+        }
+        assert!(seen.contains(&"NewPatron".to_string()), "{seen:?}");
+        // A test alert gets no banner
+        thanks.event(r#"{"type":"alert","alert":{"kind":"donation","platform":"kofi","user":"Tester","amount":5,"test":true}}"#);
+        assert!(!texts(&thanks.frame(1.0)).join("|").contains("Tester"));
+    }
+
     fn texts(cmds: &[crate::script_draw::Cmd]) -> Vec<String> {
         cmds.iter().filter_map(|c| match c {
             crate::script_draw::Cmd::Text { key, .. } => Some(key.text.clone()),
