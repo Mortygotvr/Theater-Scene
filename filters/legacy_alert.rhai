@@ -143,11 +143,6 @@ fn thousands(n) {
 
 // ─── What an alert says ─────────────────────────────────────────────────────
 
-fn platform_of(text) {
-    let p = text.to_lower();
-    if p.contains("twitch") { "twitch" } else if p.contains("kick") { "kick" } else if p.contains("youtube") { "youtube" } else { "" }
-}
-
 fn platform_color(p) {
     switch p {
         "twitch" => 0xFF9146FF,
@@ -166,117 +161,88 @@ fn icon_of(kind) {
     }
 }
 
-fn tier_of(plan) {
-    switch plan {
-        "1000" => "Tier 1", "2000" => "Tier 2", "3000" => "Tier 3", "Prime" => "Prime",
-        _ => "",
-    }
-}
-
-// A trigger without its second word, the channel it came from: "Twitch
-// mortygotvr redeem Doom" → "Twitch redeem Doom"
-fn without_owner(text) {
-    let words = text.split(" ");
-    if words.len() >= 3 && platform_of(words[0]) != "" { words.remove(1); }
-    let out = "";
-    for w in words {
-        out += if out == "" { w } else { " " + w };
-    }
-    out
-}
-
-// An alert from Theater Reader's message, or () when it isn't one
+// The card for an alert, or () when it isn't one. Theater hands every alert
+// in one shape, whatever sent it: ev.alert, with kind, platform, user,
+// message, image, amount, currency, title, cost, tier, months, duration,
+// progress, goal, anonymous, test, trigger and raw (the platform's own data).
+// Here it's only put into words; the card's kinds are those with a sound.
 fn alert_of(ev) {
-    if text_of(ev["type"]) != "alert" { return (); }
-    let data = ev["data"];
-    if !is_map(data) { data = #{}; }
-    let source = text_of(ev["source"]);
-    // Theater Reader's tester sends its trigger as the event ("Twitch
-    // testserver cheer"); real alerts, the event's own name ("Twitch cheer")
-    let event = text_of(ev["event"]);
-    if source == "Test UI" { event = without_owner(event); }
-    let e = event.to_lower();
-    // What a platform sent that Theater Reader doesn't know: not an alert
-    if e.ends_with(" other") { return (); }
-    let platform = platform_of(source + " " + event);
-    if e.contains("paid_message") || e.contains("sticker_message") || e.contains("member_message") || e.contains("super chat") || e.contains("super sticker") {
-        platform = "youtube";
-    }
-    let user = first_text([data["display_name"], data["username"], data["user"], data["author"], data["gifter_username"], data["host_username"]]);
-    let who = if user == "" { "Someone" } else { user };
-    let message = first_text([data["message"], data["user_input"]]);
-    let image = first_text([data["image"], data["avatar"]]);
-    let a = #{ kind: "other", platform: platform, user: who, action: "", detail: "", message: message, image: image, amount: 0.0 };
+    let s = ev["alert"];
+    if !is_map(s) { return (); }
+    let kind = text_of(s.kind);
+    let amount = num(s.amount);
+    let user = text_of(s.user);
+    let a = #{ kind: "other", platform: text_of(s.platform), user: if user == "" { "Someone" } else { user },
+               action: "", detail: "", message: text_of(s.message), image: text_of(s.image), amount: amount };
+    // Money as the platform wrote it ("$10.00"), else currency and amount
+    let money = first_text([field(s.raw, "amount")]);
+    if money == "" { money = thousands(amount.to_int()); }
+    let currency = text_of(s.currency);
+    if currency != "" && !money.contains(currency) { money = currency + money; }
 
-    if e.contains("redeem") {
-        // The IRC copy of a redeem has no title: the PubSub one follows
-        if e.contains("(irc)") { return (); }
-        a.kind = "redeem";
-        let title = first_text([data["reward_title"], data["title"]]);
-        if title == "" || title == "Unknown" {
-            // From the trigger: "Twitch <owner> redeem <title>"
-            let t = without_owner(text_of(ev["trigger"]));
-            let at = t.index_of("redeem ");
-            title = if at >= 0 { t.sub_string(at + 7) } else { "" };
-            title.trim();
+    switch kind {
+        "redeem" => {
+            a.kind = "redeem";
+            let title = text_of(s.title);
+            a.action = if title == "" { "redeemed a reward" } else { "redeemed " + title };
+            let cost = num(s.cost);
+            if cost > 0.0 { a.detail = thousands(cost.to_int()) + " points"; }
         }
-        a.action = if title == "" { "redeemed a reward" } else { "redeemed " + title };
-        let cost = num(data["cost"]);
-        if cost > 0.0 { a.detail = thousands(cost.to_int()) + " points"; }
-    } else if e.contains("gift") || ["subgift", "anonsubgift", "submysterygift", "giftpaidupgrade"].contains(text_of(data["type"])) {
-        a.kind = "gift";
-        let t = text_of(data["type"]);
-        if t == "anonsubgift" { a.user = "An anonymous gifter"; }
-        // (Theater Reader's test gifts carry an amount)
-        let gifted = data["gifted_usernames"];
-        let n = if type_of(gifted) == "array" { gifted.len() } else { num(first_text([data["count"], data["quantity"], data["amount"]])).to_int() };
-        a.action = if t == "giftpaidupgrade" { "is continuing their gifted sub!" }
-                   else if n > 1 { "gifted " + n + " subs!" } else { "gifted a sub!" };
-        a.detail = tier_of(text_of(data["plan"]));
-        a.amount = n.to_float();
-    } else if e.contains("sub") {
-        a.kind = "sub";
-        a.action = if text_of(data["type"]) == "resub" { "resubscribed!" } else { "subscribed!" };
-        a.detail = tier_of(text_of(data["plan"]));
-    } else if e.contains("cheer") {
-        a.kind = "cheer";
-        let bits = num(first_text([data["bits"], data["amount"]]));
-        a.amount = bits;
-        a.action = "cheered " + thousands(bits.to_int()) + (if bits == 1.0 { " bit!" } else { " bits!" });
-    } else if e.contains("raid") {
-        if e.contains("end") { return (); }
-        a.kind = "raid";
-        let viewers = num(first_text([data["viewers"], data["viewers_count"], data["viewer_count"], data["amount"]]));
-        a.amount = viewers;
-        a.action = if viewers > 0.0 { "is raiding with " + thousands(viewers.to_int()) + " viewers!" } else { "is raiding!" };
-    } else if e.contains("paid_message") || e.contains("sticker_message") || e.contains("super chat") || e.contains("super sticker") {
-        a.kind = "superchat";
-        a.action = if e.contains("sticker") { "sent a Super Sticker!" } else { "sent a Super Chat!" };
-        a.detail = first_text([data["amount"]]);
-    } else if e.contains("member") {
-        a.kind = "member";
-        a.action = "became a member!";
-    } else if e.contains("follow") {
-        a.kind = "follow";
-        a.action = "followed!";
-    } else if e.contains("hype train") {
-        a.kind = "hype";
-        let level = num(data["level"]).to_int();
-        a.user = "Hype Train";
-        a.action = if level > 0 { "Level " + level + "!" } else { "has started!" };
-        let goal = num(data["goal"]);
-        if goal > 0.0 { a.detail = "" + (num(data["progress"]) * 100.0 / goal).to_int() + "% to the next level"; }
-    } else if e.contains("timeout") || e.contains("ban") {
-        a.kind = "moderation";
-        let secs = num(data["duration"]).to_int();
-        a.action = if e.contains("timeout") { "was timed out" + (if secs > 0 { " (" + secs + " s)" } else { "" }) } else { "was banned" };
-        a.message = "";
-    } else if e.contains("stream start") || e.contains("stream end") {
-        a.kind = "stream";
-        a.user = if e.contains("start") { "We're live!" } else { "Stream over" };
-        a.action = if e.contains("start") { "The stream has started" } else { "Thanks for watching!" };
-    } else {
-        a.action = if event == "" { text_of(ev["trigger"]) } else { event };
+        "gift" | "gift_upgrade" => {
+            a.kind = "gift";
+            if s.anonymous == true { a.user = "An anonymous gifter"; }
+            let n = amount.to_int();
+            a.action = if kind == "gift_upgrade" { "is continuing their gifted sub!" }
+                       else if n > 1 { "gifted " + n + " subs!" } else { "gifted a sub!" };
+            a.detail = text_of(s.tier);
+        }
+        "sub" | "resub" => {
+            a.kind = "sub";
+            a.action = if kind == "resub" { "resubscribed!" } else { "subscribed!" };
+            a.detail = text_of(s.tier);
+            let months = num(s.months).to_int();
+            if months > 1 { a.detail += (if a.detail == "" { "" } else { " · " }) + months + " months"; }
+        }
+        "cheer" => {
+            a.kind = "cheer";
+            a.action = "cheered " + thousands(amount.to_int()) + (if amount == 1.0 { " bit!" } else { " bits!" });
+        }
+        "raid" => {
+            a.kind = "raid";
+            a.action = if amount > 0.0 { "is raiding with " + thousands(amount.to_int()) + " viewers!" } else { "is raiding!" };
+        }
+        "superchat" | "supersticker" => {
+            a.kind = "superchat";
+            a.action = if kind == "supersticker" { "sent a Super Sticker!" } else { "sent a Super Chat!" };
+            a.detail = money;
+        }
+        // Ko-fi, Patreon…: the money card
+        "donation" | "pledge" => {
+            a.kind = "superchat";
+            a.action = if kind == "pledge" { "pledged " + money + "!" } else { "donated " + money + "!" };
+        }
+        "member" => { a.kind = "member"; a.action = "became a member!"; }
+        "follow" => { a.kind = "follow"; a.action = "followed!"; }
+        "hype_train" => {
+            a.kind = "hype";
+            let level = amount.to_int();
+            a.user = "Hype Train";
+            a.action = if level > 0 { "Level " + level + "!" } else { "has started!" };
+            let goal = num(s.goal);
+            if goal > 0.0 { a.detail = "" + (num(s.progress) * 100.0 / goal).to_int() + "% to the next level"; }
+        }
+        "timeout" | "ban" => {
+            a.kind = "moderation";
+            let secs = num(s.duration).to_int();
+            a.action = if kind == "timeout" { "was timed out" + (if secs > 0 { " (" + secs + " s)" } else { "" }) } else { "was banned" };
+            a.message = "";
+        }
+        "stream_start" => { a.kind = "stream"; a.user = "We're live!"; a.action = "The stream has started"; }
+        "stream_end" => { a.kind = "stream"; a.user = "Stream over"; a.action = "Thanks for watching!"; }
+        _ => {
+            let event = text_of(ev["event"]);
+            a.action = if event == "" { text_of(s.trigger) } else { event };
+        }
     }
     a
 }
@@ -615,16 +581,16 @@ fn on_event(ev) {
     if !none(a) { this.add_alert(a); }
 }
 
-// Samples of each kind (the test button)
+// Samples of each kind (the test button), in the shape Theater hands alerts
 fn test_alerts() {
     [
-        #{ type: "alert", source: "TwitchParser", event: "Twitch sub", data: #{ username: "StreamFan42", type: "resub", plan: "1000", message: "Six months already, love this stream!" } },
-        #{ type: "alert", source: "TwitchParser", event: "Twitch cheer", data: #{ username: "KappaKing", bits: "500", message: "Take my bits!" } },
-        #{ type: "alert", source: "TwitchParser", event: "Twitch raid", data: #{ username: "BigStreamer", viewers: "128" } },
-        #{ type: "alert", source: "TwitchParser", event: "Twitch redeem (pubsub)", data: #{ display_name: "ModSquad", reward_title: "Hydrate!", cost: 1500,
+        #{ type: "alert", alert: #{ kind: "resub", platform: "twitch", user: "StreamFan42", tier: "Tier 1", months: 6, message: "Six months already, love this stream!" } },
+        #{ type: "alert", alert: #{ kind: "cheer", platform: "twitch", user: "KappaKing", amount: 500, message: "Take my bits!" } },
+        #{ type: "alert", alert: #{ kind: "raid", platform: "twitch", user: "BigStreamer", amount: 128 } },
+        #{ type: "alert", alert: #{ kind: "redeem", platform: "twitch", user: "ModSquad", title: "Hydrate!", cost: 1500,
             image: "https://static-cdn.jtvnw.net/custom-reward-images/default-4.png" } },
-        #{ type: "alert", source: "YouTubeParser", event: "paid_message", data: #{ author: "TubeWatcher", amount: "$10.00", message: "Greetings from YouTube!" } },
-        #{ type: "alert", source: "KickParser", event: "Kick follow", data: #{ username: "KickRunner" } },
+        #{ type: "alert", alert: #{ kind: "superchat", platform: "youtube", user: "TubeWatcher", amount: 10.0, currency: "$", raw: #{ amount: "$10.00" }, message: "Greetings from YouTube!" } },
+        #{ type: "alert", alert: #{ kind: "follow", platform: "kick", user: "KickRunner" } },
     ]
 }
 

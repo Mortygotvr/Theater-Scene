@@ -1322,7 +1322,17 @@ static PENDING_BUTTONS: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
 
 /// A relay message as the map a source's on_event gets: its JSON as it is
 /// (type, user, message…), or #{ type: "raw", text: … } when it isn't JSON.
+/// An alert always has `alert`, the shared shape (theater_shared::alert):
+/// filled in here when its sender didn't.
 pub(crate) fn event_map(text: &str) -> Map {
+    let filled;
+    let text = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v) if v.get("type").and_then(|t| t.as_str()) == Some("alert") && v.get("alert").is_none() => {
+            filled = theater_shared::alert::with_alert(v).to_string();
+            filled.as_str()
+        }
+        _ => text,
+    };
     engine().parse_json(text, true).unwrap_or_else(|_| {
         let mut m = Map::new();
         m.insert("type".into(), Dynamic::from("raw"));
@@ -3012,6 +3022,15 @@ mod tests {
             "hype: Hype Train Level 3! [45% to the next level] twitch"
         );
         assert_eq!(says(r#"{"type":"alert","source":"KickParser","event":"Kick follow","data":{"username":"Kicker"}}"#), "follow: Kicker followed! [] kick");
+        // A sender that hands the shared alert itself (a Theater API plugin): used as it is
+        assert_eq!(
+            says(r#"{"type":"alert","alert":{"kind":"resub","platform":"twitch","user":"Ann","tier":"Tier 3","months":14},"data":{"username":"not used"}}"#),
+            "sub: Ann resubscribed! [Tier 3 · 14 months] twitch"
+        );
+        assert_eq!(
+            says(r#"{"type":"alert","alert":{"kind":"donation","platform":"kofi","user":"Kind","amount":5,"currency":"$"}}"#),
+            "superchat: Kind donated $5! [] kofi"
+        );
         assert_eq!(says(r#"{"type":"chat","username":"x","message":"y"}"#), "()");
         // Theater Reader's tester: "testserver" in the event, the number in `amount`
         assert_eq!(
