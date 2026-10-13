@@ -3031,6 +3031,25 @@ mod tests {
             says(r#"{"type":"alert","alert":{"kind":"donation","platform":"kofi","user":"Kind","amount":5,"currency":"$"}}"#),
             "superchat: Kind donated $5! [] kofi"
         );
+        // Theater API · Patreon and · Ko-fi: a pledge with its tier, an ended one (no card), a shop order
+        assert_eq!(
+            says(r#"{"type":"alert","alert":{"kind":"pledge","platform":"patreon","user":"Pat","amount":5,"currency":"USD","tier":"Gold","raw":{"pledge_amount":"$5.00"}}}"#),
+            "superchat: Pat pledged $5! [Gold] patreon"
+        );
+        // Currency codes: a symbol where there's a common one, else after the amount
+        assert_eq!(
+            says(r#"{"type":"alert","alert":{"kind":"donation","platform":"kofi","user":"Eu","amount":5,"currency":"EUR","raw":{"amount":"5.00"}}}"#),
+            "superchat: Eu donated €5.00! [] kofi"
+        );
+        assert_eq!(
+            says(r#"{"type":"alert","alert":{"kind":"donation","platform":"kofi","user":"Ch","amount":7.5,"currency":"CHF"}}"#),
+            "superchat: Ch donated 7.5 CHF! [] kofi"
+        );
+        assert_eq!(says(r#"{"type":"alert","alert":{"kind":"pledge_end","platform":"patreon","user":"Pat"}}"#), "()");
+        assert_eq!(
+            says(r#"{"type":"alert","alert":{"kind":"shop_order","platform":"kofi","user":"Buyer","title":"2x Sticker","amount":10}}"#),
+            "superchat: Buyer bought 2x Sticker! [] kofi"
+        );
         assert_eq!(says(r#"{"type":"chat","username":"x","message":"y"}"#), "()");
         // Theater Reader's tester: "testserver" in the event, the number in `amount`
         assert_eq!(

@@ -166,9 +166,14 @@ fn alert_of(ev) {
                action: "", detail: "", message: text_of(s.message), image: text_of(s.image), amount: amount };
     // Money as the platform wrote it ("$10.00"), else currency and amount
     let money = first_text([field(s.raw, "amount")]);
-    if money == "" { money = thousands(amount.to_int()); }
+    if money == "" { money = if amount == amount.floor() { thousands(amount.to_int()) } else { "" + amount }; }
+    // A currency code as its symbol where there's a common one ("USD" → "$5.00"), else after it ("5.00 CHF")
     let currency = text_of(s.currency);
-    if currency != "" && !money.contains(currency) { money = currency + money; }
+    let symbol = switch currency { "USD" => "$", "EUR" => "€", "GBP" => "£", "JPY" => "¥", "CAD" => "CA$", "AUD" => "A$", _ => currency };
+    if currency != "" && !money.contains(symbol) && !money.contains(currency) {
+        let code = symbol == currency && currency.len() >= 3 && currency.to_upper() == currency;
+        money = if code { money + " " + currency } else { symbol + money };
+    }
 
     switch kind {
         "redeem" => {
@@ -210,7 +215,17 @@ fn alert_of(ev) {
         "donation" | "pledge" => {
             a.kind = "superchat";
             a.action = if kind == "pledge" { "pledged " + money + "!" } else { "donated " + money + "!" };
+            a.detail = text_of(s.tier);
         }
+        "pledge_change" => { a.kind = "superchat"; a.action = "changed their pledge to " + money + "!"; a.detail = text_of(s.tier); }
+        "shop_order" => {
+            a.kind = "superchat";
+            let what = text_of(s.title);
+            a.action = if what == "" { "bought something for " + money + "!" } else { "bought " + what + "!" };
+        }
+        "commission" => { a.kind = "superchat"; a.action = "ordered a commission for " + money + "!"; }
+        // An ended pledge fires its trigger, but no card shows it
+        "pledge_end" => { return (); }
         "member" => { a.kind = "member"; a.action = "became a member!"; }
         "follow" => { a.kind = "follow"; a.action = "followed!"; }
         "hype_train" => {
