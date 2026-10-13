@@ -179,6 +179,20 @@ pub fn reader_chats() -> Vec<(theater_shared::Platform, String)> {
     parse_reader_chats(&json)
 }
 
+/// Another plugin's procedure that hands back `out string json` (Theater
+/// API's lists…). None when that procedure isn't there (its plugin isn't
+/// installed). Any thread.
+pub fn call_json(name: &CStr) -> Option<String> {
+    let obs = obs()?;
+    let mut cd = Calldata { stack: std::ptr::null_mut(), size: 0, capacity: 0, fixed: false };
+    let called = unsafe { (obs.proc_handler_call)(obs.proc_handler, name.as_ptr(), &mut cd) };
+    let json = called.then(|| get_string(obs, &mut cd, c"json"));
+    if !cd.stack.is_null() {
+        unsafe { (obs.bfree)(cd.stack as *mut c_void) };
+    }
+    json
+}
+
 /// theater_reader_state's `chats`: `[{"platform":"Twitch","channel":"…"}]`
 fn parse_reader_chats(json: &str) -> Vec<(theater_shared::Platform, String)> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return Vec::new() };

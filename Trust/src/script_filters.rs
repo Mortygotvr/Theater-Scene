@@ -53,7 +53,9 @@
 //! SHADER; its `tick(dt)` returns what to draw — boxes, text and pictures,
 //! see script_draw — at `this.size` ([w, h]), and `fn on_event(ev)` gets
 //! each message from the relay (script_feed: chat, alerts…), `fn
-//! on_button(key)` a click on a `button(key, label)` property. More property
+//! on_button(key)` a click on a `button(key, label)` property. `supporters()`
+//! lists your supporters (Twitch subscribers, Patreon patrons, Ko-fi
+//! supporters, from the Theater API plugins: supporters). More property
 //! kinds: `color(key, label)` (0xAARRGGBB), `font_list(key, label)` and
 //! `file(key, label)` / `file(key, label, "Sounds (*.wav *.mp3)")` (a file
 //! picker). `play_sound(path)` / `play_sound(path, volume)` plays a sound
@@ -524,6 +526,22 @@ pub fn engine() -> &'static Engine {
         crate::script_draw::register(&mut engine);
         // Whether the relay (script_feed) is connected
         engine.register_fn("relay_connected", crate::script_feed::connected);
+        // Your supporters, from the Theater API plugins' lists (supporters):
+        // [#{ name, platform, tier, amount, gift }]
+        engine.register_fn("supporters", || -> Array {
+            crate::supporters::list()
+                .into_iter()
+                .map(|s| {
+                    let mut m = Map::new();
+                    m.insert("name".into(), Dynamic::from(s.name));
+                    m.insert("platform".into(), Dynamic::from(s.platform));
+                    m.insert("tier".into(), Dynamic::from(s.tier));
+                    m.insert("amount".into(), Dynamic::from(s.amount));
+                    m.insert("gift".into(), Dynamic::from(s.gift));
+                    Dynamic::from_map(m)
+                })
+                .collect()
+        });
         // A sound through the Throwables Layer (decoded on a thread of its own)
         engine.register_fn("play_sound", |path: &str| play_sound(path, 1.0));
         engine.register_fn("play_sound", |path: &str, volume: f64| play_sound(path, volume));
@@ -2951,6 +2969,79 @@ mod tests {
         group_looks(&done, &mut looks);
         assert!(looks.iter().all(|(clip, add)| clip.is_none() && !add), "{looks:?}");
         assert!(texts(&chat.frame(0.1)).join("|").contains("light bar test"));
+    }
+
+    #[test]
+    fn the_thanks_roll_up_grouped_and_a_new_supporter_joins() {
+        let Some(mut thanks) = Chat::load("theater_thanks.rhai") else { return };
+        assert_eq!(thanks.compiled.kind, ScriptKind::Source);
+        // Nobody yet (no Theater API plugin in the tests): it says so as it rolls in
+        let words = texts(&thanks.frame(3.0)).join("|");
+        assert!(words.contains("Legendary Supporters") && words.contains("Seeking legends…"), "{words}");
+
+        // The test names, by platform: Twitch first, then Patreon, then Ko-fi, names alphabetical
+        thanks.call("on_button", Dynamic::from("test".to_string()));
+        thanks.update(&[("speed", Dynamic::from_float(400.0)), ("height", Dynamic::from_int(2160))]);
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..12 {
+            for t in texts(&thanks.frame(0.5)) {
+                if !seen.contains(&t) {
+                    seen.push(t);
+                }
+            }
+        }
+        let at = |name: &str| seen.iter().position(|t| t == name).unwrap_or_else(|| panic!("{name} not in {seen:?}"));
+        assert!(at("TWITCH SUBSCRIBERS") < at("KappaKing") && at("KappaKing") < at("StreamFan42"), "{seen:?}");
+        assert!(at("StreamFan42") < at("PATREON SUPPORTERS") && at("PATREON SUPPORTERS") < at("KO-FI SUPPORTERS"));
+        assert!(seen.contains(&"TWITCH".to_string()), "a platform badge");
+
+        // By tier: Twitch Tier 3 before Tier 1
+        thanks.update(&[("grouping", Dynamic::from("tier".to_string()))]);
+        thanks.call("on_button", Dynamic::from("restart".to_string()));
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..12 {
+            for t in texts(&thanks.frame(0.5)) {
+                if !seen.contains(&t) {
+                    seen.push(t);
+                }
+            }
+        }
+        let at = |name: &str| seen.iter().position(|t| t == name).unwrap_or_else(|| panic!("{name} not in {seen:?}"));
+        assert!(at("TWITCH TIER 3") < at("TWITCH TIER 1"), "{seen:?}");
+        assert!(at("GOLD") < at("SILVER"), "Patreon tiers by what they give: {seen:?}");
+
+        // Someone pledging during the stream joins; a test alert doesn't
+        thanks.event(r#"{"type":"alert","alert":{"kind":"pledge","platform":"patreon","user":"NewPatron","tier":"Gold","amount":10}}"#);
+        thanks.event(r#"{"type":"alert","alert":{"kind":"donation","platform":"kofi","user":"Tester","amount":5,"test":true}}"#);
+        thanks.call("on_button", Dynamic::from("restart".to_string()));
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..14 {
+            seen.extend(texts(&thanks.frame(0.5)));
+        }
+        assert!(seen.contains(&"NewPatron".to_string()) && !seen.contains(&"Tester".to_string()));
+
+        // Along the bottom: one line, clipped to its bar
+        thanks.update(&[("direction", Dynamic::from("horizontal".to_string())), ("speed", Dynamic::from_float(300.0))]);
+        thanks.call("on_button", Dynamic::from("restart".to_string()));
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..30 {
+            seen.extend(texts(&thanks.frame(0.5)));
+        }
+        assert!(seen.contains(&"KappaKing".to_string()) && seen.iter().any(|t| t == "•"), "{seen:?}");
+
+        // Fireworks: sparks drawn with added light; the hearts rise
+        let mut looks = Vec::new();
+        group_looks(&thanks.frame_grouped(2.0), &mut looks);
+        assert!(looks.iter().any(|(_, add)| *add));
+        let heart_ys = |cmds: &[crate::script_draw::Cmd]| -> Vec<f32> {
+            cmds.iter().filter_map(|c| match c {
+                crate::script_draw::Cmd::Text { key, y, .. } if key.text == "♥" => Some(*y),
+                _ => None,
+            }).collect()
+        };
+        let before = heart_ys(&thanks.frame(0.1));
+        let after = heart_ys(&thanks.frame(1.0));
+        assert!(!before.is_empty() && before.iter().zip(&after).filter(|(b, a)| *a < *b).count() > before.len() / 2, "{before:?} → {after:?}");
     }
 
     fn texts(cmds: &[crate::script_draw::Cmd]) -> Vec<String> {

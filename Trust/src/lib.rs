@@ -25,6 +25,7 @@ pub mod egui_docks;
 pub mod script_docks;
 pub mod render_gate;
 pub mod trigger_builder;
+pub mod supporters;
 pub mod paths;
 
 use std::collections::HashMap;
