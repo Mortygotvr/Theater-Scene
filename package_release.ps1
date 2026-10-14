@@ -3,7 +3,7 @@
 #   theater-scene\data        assets, filters, scripts (only the files git tracks)
 # People extract it into C:\ProgramData\obs-studio\plugins.
 # Build first: cd Trust; cargo build --release; .\build_trust_qt.ps1
-param([string]$Version = "0.1.0")
+param([string]$Version = "0.2.0")
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
