@@ -33,6 +33,11 @@ const PLAY_SOUND_DECL: &CStr = c"void theater_scene_play_sound(in string path, i
 const PLAY_SOUND: &CStr = c"theater_scene_play_sound";
 const LIST_CHANGED_DECL: &CStr = c"void theater_scene_list_changed()";
 const LIST_CHANGED: &CStr = c"theater_scene_list_changed";
+/// Each message sent through the Theater plugins' relay (theater_shared::relay)
+const THEATER_EVENT_DECL: &CStr = c"void theater_event(string json)";
+const THEATER_EVENT: &CStr = c"theater_event";
+/// The Theater plugin hosting the relay in OBS registers it
+const RELAY_HOST: &CStr = c"theater_relay_host";
 /// Theater Reader's (its plugin registers it)
 const READER_STATE: &CStr = c"theater_reader_state";
 
@@ -52,6 +57,7 @@ struct Obs {
     proc_handler_call: unsafe extern "C" fn(*mut c_void, *const c_char, *mut Calldata) -> bool,
     signal_handler_add: unsafe extern "C" fn(*mut c_void, *const c_char) -> bool,
     signal_handler_signal: unsafe extern "C" fn(*mut c_void, *const c_char, *mut Calldata),
+    signal_handler_connect: unsafe extern "C" fn(*mut c_void, *const c_char, ProcFn, *mut c_void),
     calldata_get_string: unsafe extern "C" fn(*const Calldata, *const c_char, *mut *const c_char) -> bool,
     calldata_get_data: unsafe extern "C" fn(*const Calldata, *const c_char, *mut c_void, usize) -> bool,
     calldata_set_data: unsafe extern "C" fn(*mut Calldata, *const c_char, *const c_void, usize),
@@ -86,6 +92,7 @@ fn load() -> Option<Obs> {
         proc_handler_call: sym(c"proc_handler_call")?,
         signal_handler_add: sym(c"signal_handler_add")?,
         signal_handler_signal: sym(c"signal_handler_signal")?,
+        signal_handler_connect: sym(c"signal_handler_connect")?,
         calldata_get_string: sym(c"calldata_get_string")?,
         calldata_get_data: sym(c"calldata_get_data")?,
         calldata_set_data: sym(c"calldata_set_data")?,
@@ -112,6 +119,9 @@ pub fn register() {
         (obs.proc_handler_add)(obs.proc_handler, FIRE_DECL.as_ptr(), fire_proc, std::ptr::null_mut());
         (obs.proc_handler_add)(obs.proc_handler, VISIBILITY_DECL.as_ptr(), visibility_proc, std::ptr::null_mut());
         (obs.proc_handler_add)(obs.proc_handler, PLAY_SOUND_DECL.as_ptr(), play_sound_proc, std::ptr::null_mut());
+        // The Theater API plugins' messages when no Theater plugin hosts the relay
+        (obs.signal_handler_add)(obs.signal_handler, THEATER_EVENT_DECL.as_ptr());
+        (obs.signal_handler_connect)(obs.signal_handler, THEATER_EVENT.as_ptr(), theater_event_signal, std::ptr::null_mut());
     }
     REGISTERED.store(true, Ordering::SeqCst);
     crate::obs_source::trust_log(
@@ -177,6 +187,63 @@ pub fn reader_chats() -> Vec<(theater_shared::Platform, String)> {
         unsafe { (obs.bfree)(cd.stack as *mut c_void) };
     }
     parse_reader_chats(&json)
+}
+
+/// Whether a Theater plugin (Theater Reader's) hosts the relay in OBS: then
+/// every message, the Theater API plugins' too, comes by the relay port.
+/// Any thread.
+pub fn relay_host_in_obs() -> bool {
+    let Some(obs) = obs() else { return false };
+    let mut cd = Calldata { stack: std::ptr::null_mut(), size: 0, capacity: 0, fixed: false };
+    let called = unsafe { (obs.proc_handler_call)(obs.proc_handler, RELAY_HOST.as_ptr(), &mut cd) };
+    if !cd.stack.is_null() {
+        unsafe { (obs.bfree)(cd.stack as *mut c_void) };
+    }
+    called
+}
+
+/// A Theater plugin's message inside OBS. Without a Theater plugin hosting
+/// the relay, the Theater API plugins send only this way (the port is the
+/// Theater Reader app's, or nobody's): it goes where a relay message goes,
+/// to the triggers and the Rhai sources. With one, the same message comes by
+/// the port, so this one is left out.
+unsafe extern "C" fn theater_event_signal(_data: *mut c_void, cd: *mut Calldata) {
+    let Some(obs) = OBS.get() else { return };
+    let json = get_string(obs, cd, c"json");
+    if json.is_empty() || relay_host_in_obs() {
+        return;
+    }
+    let _ = std::panic::catch_unwind(|| {
+        crate::reader_client::on_relay_message(&json);
+        crate::script_feed::publish(&json);
+    });
+}
+
+/// Whether a relay message is a Twitch alert that Theater API · Twitch sends
+/// itself (for a channel it's connected to), so the one from the port would
+/// come twice. Only without a Theater plugin hosting the relay: the Theater
+/// Reader plugin already leaves those out, the Theater Reader app doesn't.
+pub fn api_sends_this_twitch_alert(text: &str) -> bool {
+    if !text.contains("\"alert\"") || relay_host_in_obs() {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return false };
+    let Some(channel) = twitch_alert_channel(&v) else { return false };
+    let Some(channels) = call_json(c"theater_api_twitch_channels") else { return false };
+    serde_json::from_str::<Vec<String>>(&channels).unwrap_or_default().iter().any(|c| c.eq_ignore_ascii_case(&channel))
+}
+
+/// A Twitch alert's channel, from its trigger ("Twitch <channel> redeem …"):
+/// redeems' IRC copies too
+fn twitch_alert_channel(v: &serde_json::Value) -> Option<String> {
+    if v.get("type")?.as_str()? != "alert" {
+        return None;
+    }
+    let mut words = v.get("trigger")?.as_str()?.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("twitch") {
+        return None;
+    }
+    Some(words.next()?.trim_start_matches('#').to_string())
 }
 
 /// Another plugin's procedure that hands back `out string json` (Theater
@@ -430,5 +497,15 @@ mod tests {
         );
         // Theater Reader not installed: no answer
         assert!(parse_reader_chats("").is_empty());
+    }
+
+    #[test]
+    fn a_twitch_alerts_channel_comes_from_its_trigger() {
+        let channel = |json: &str| twitch_alert_channel(&serde_json::from_str(json).unwrap());
+        // The Theater Reader app's alert, and a redeem's IRC copy
+        assert_eq!(channel(r#"{"type":"alert","source":"twitch","event":"sub","trigger":"Twitch MyChannel sub","data":{}}"#).as_deref(), Some("MyChannel"));
+        assert_eq!(channel(r#"{"type":"alert","trigger":"twitch #mychannel redeem 1234-abcd"}"#).as_deref(), Some("mychannel"));
+        assert_eq!(channel(r#"{"type":"alert","trigger":"YouTube MyChannel superchat"}"#), None);
+        assert_eq!(channel(r#"{"type":"chat","trigger":"Twitch MyChannel"}"#), None, "chat stays");
     }
 }

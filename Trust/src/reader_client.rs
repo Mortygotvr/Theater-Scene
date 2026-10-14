@@ -59,6 +59,8 @@ impl ReaderClient {
                             }
 
                             match msg_result {
+                                // (Not a Twitch alert Theater API · Twitch sends too)
+                                Ok(tokio_tungstenite::tungstenite::Message::Text(text)) if crate::obs_procs::api_sends_this_twitch_alert(&text) => {}
                                 Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => on_relay_message(&text),
                                 Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
                                     println!("[Trust WS] Theater Reader connection closed.");
