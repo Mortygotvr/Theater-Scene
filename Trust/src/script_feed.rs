@@ -5,6 +5,11 @@
 //! from the connection redeems and poses use: a source seeing a message
 //! never makes anything fire. Test messages (publish) reach every source
 //! the same way.
+//!
+//! A source can also listen to a WebSocket of its own (`this.feed = "ws://
+//! host:port"`, subscribe_url): a game or app sending its own messages, on
+//! this PC or another. One connection per address, shared by the sources
+//! listening to it, reconnected every few seconds while it's away.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +31,73 @@ const BACKLOG: usize = 256;
 static SUBSCRIBERS: Mutex<Vec<Sender<Arc<str>>>> = Mutex::new(Vec::new());
 static STARTED: AtomicBool = AtomicBool::new(false);
 static CONNECTED: AtomicBool = AtomicBool::new(false);
+
+/// Sources listening to an address of their own, by address.
+struct UrlFeed {
+    url: String,
+    subscribers: Vec<Sender<Arc<str>>>,
+    connected: Arc<AtomicBool>,
+}
+
+static URL_FEEDS: Mutex<Vec<UrlFeed>> = Mutex::new(Vec::new());
+
+/// Every message from the WebSocket at `url` from now on (its text). The
+/// first subscriber to an address connects to it.
+pub fn subscribe_url(url: &str) -> Receiver<Arc<str>> {
+    let (tx, rx) = crossbeam_channel::bounded(BACKLOG);
+    let mut feeds = URL_FEEDS.lock();
+    if let Some(feed) = feeds.iter_mut().find(|f| f.url == url) {
+        feed.subscribers.push(tx);
+        return rx;
+    }
+    let connected = Arc::new(AtomicBool::new(false));
+    feeds.push(UrlFeed { url: url.to_string(), subscribers: vec![tx], connected: connected.clone() });
+    drop(feeds);
+    let url = url.to_string();
+    crate::state::get_state().runtime.spawn(async move {
+        let mut said_waiting = false;
+        loop {
+            match tokio_tungstenite::connect_async(url.as_str()).await {
+                Ok((stream, _)) => {
+                    trust_log(&format!("[Rhai] 📡 Connected to {}", url));
+                    connected.store(true, Ordering::Relaxed);
+                    said_waiting = false;
+                    let (_, mut read) = stream.split();
+                    while let Some(message) = read.next().await {
+                        match message {
+                            Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => publish_url(&url, text.as_str()),
+                            Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break,
+                            _ => {}
+                        }
+                    }
+                    connected.store(false, Ordering::Relaxed);
+                    trust_log(&format!("[Rhai] 📡 {} closed: reconnecting", url));
+                }
+                Err(e) => {
+                    if !said_waiting {
+                        trust_log(&format!("[Rhai] 📡 Nothing at {} yet ({}): trying every few seconds", url, e));
+                        said_waiting = true;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    });
+    rx
+}
+
+/// Hands `message` to every source listening to `url`.
+fn publish_url(url: &str, message: &str) {
+    let message: Arc<str> = Arc::from(message);
+    if let Some(feed) = URL_FEEDS.lock().iter_mut().find(|f| f.url == url) {
+        feed.subscribers.retain(|tx| !matches!(tx.try_send(message.clone()), Err(TrySendError::Disconnected(_))));
+    }
+}
+
+/// Whether the WebSocket at `url` (one a source listens to) is connected.
+pub fn url_connected(url: &str) -> bool {
+    URL_FEEDS.lock().iter().any(|f| f.url == url && f.connected.load(Ordering::Relaxed))
+}
 
 /// Whether the relay is connected.
 pub fn connected() -> bool {

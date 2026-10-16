@@ -52,7 +52,10 @@
 //! `const KIND = "source"` makes it an OBS source rather than a filter: no
 //! SHADER; its `tick(dt)` returns what to draw — boxes, text and pictures,
 //! see script_draw — at `this.size` ([w, h]), and `fn on_event(ev)` gets
-//! each message from the relay (script_feed: chat, alerts…), `fn
+//! each message from the relay (script_feed: chat, alerts…), and from the
+//! WebSocket at `this.feed` when it sets one (`"ws://host:port"`, from its
+//! settings in `update()`: a game or app sending its own messages; changing
+//! it switches; `feed_connected(url)` says whether it's connected), `fn
 //! on_button(key)` a click on a `button(key, label)` property. `supporters()`
 //! lists your supporters (Twitch subscribers, Patreon patrons, Ko-fi
 //! supporters, from the Theater API plugins: supporters). More property
@@ -526,6 +529,7 @@ pub fn engine() -> &'static Engine {
         crate::script_draw::register(&mut engine);
         // Whether the relay (script_feed) is connected
         engine.register_fn("relay_connected", crate::script_feed::connected);
+        engine.register_fn("feed_connected", |url: &str| crate::script_feed::url_connected(url.trim()));
         // Your supporters, from the Theater API plugins' lists (supporters):
         // [#{ name, platform, tier, amount, gift }]
         engine.register_fn("supporters", || -> Array {
@@ -1380,6 +1384,8 @@ struct Instance {
     size: std::sync::atomic::AtomicU64,
     /// A source's relay messages (script_feed), when it has on_event
     events: Option<crossbeam_channel::Receiver<Arc<str>>>,
+    /// The WebSocket its script listens to (`this.feed`), and its messages
+    feed: Mutex<Option<(String, crossbeam_channel::Receiver<Arc<str>>)>>,
     state: Mutex<InstanceState>,
 }
 
@@ -1661,6 +1667,7 @@ unsafe extern "C" fn create(settings: P, source: P) -> P {
         id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         size: std::sync::atomic::AtomicU64::new((400u64 << 32) | 600),
         events,
+        feed: Mutex::new(None),
         state: Mutex::new(InstanceState {
             this: new_this(),
             uniforms: None,
@@ -2068,7 +2075,7 @@ unsafe extern "C" fn video_tick(data: P, seconds: f32) {
     } else {
         Vec::new()
     };
-    let messages: Vec<Arc<str>> = instance.events.as_ref().map(|rx| rx.try_iter().take(MAX_EVENTS_PER_TICK).collect()).unwrap_or_default();
+    let mut messages: Vec<Arc<str>> = instance.events.as_ref().map(|rx| rx.try_iter().take(MAX_EVENTS_PER_TICK).collect()).unwrap_or_default();
 
     let mut all_effects = Vec::new();
     {
@@ -2081,6 +2088,23 @@ unsafe extern "C" fn video_tick(data: P, seconds: f32) {
             .and_then(|m| m.get("time").and_then(|t| t.as_float().ok()))
             .unwrap_or(0.0);
         state.set("time", Dynamic::from_float(time + seconds as f64));
+        // Its own WebSocket (this.feed): listened to, switched when it
+        // changes, and its messages with the relay's
+        if compiled.kind == ScriptKind::Source && compiled.has("on_event") {
+            let url = state
+                .this
+                .read_lock::<Map>()
+                .and_then(|m| m.get("feed").and_then(|f| f.clone().into_string().ok()))
+                .map(|u| u.trim().to_string())
+                .unwrap_or_default();
+            let mut feed = instance.feed.lock();
+            if feed.as_ref().map(|(u, _)| u.as_str()) != Some(url.as_str()) {
+                *feed = (!url.is_empty()).then(|| (url.clone(), crate::script_feed::subscribe_url(&url)));
+            }
+            if let Some((_, rx)) = feed.as_ref() {
+                messages.extend(rx.try_iter().take(MAX_EVENTS_PER_TICK));
+            }
+        }
         for key in clicks {
             let (result, effects) = call_collecting(&compiled, &mut state.this, "on_button", (key,));
             if let Err(e) = result {
