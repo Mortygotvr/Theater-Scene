@@ -5650,6 +5650,13 @@ impl StudioApp {
                                                 item.config.set_target(&current_target);
                                             }
 
+                                            // A Theater Puppet body part rides on the source's name
+                                            // ("🎭 Theater Puppet:head"): the list shows the source,
+                                            // the Part list next to it the part
+                                            let full_target = current_target.clone();
+                                            let (base_target, current_part) = crate::puppet_parts::split_named(&full_target);
+                                            let current_target = base_target.to_string();
+
                                             // Determine display text for current selection
                                             let selected_text = if current_target == "random" {
                                                 "🎲 Random Target".to_string()
@@ -5695,6 +5702,29 @@ impl StudioApp {
                                                         item.is_dirty = true;
                                                     }
                                                 });
+
+                                            // A Theater Puppet source: which body part to aim at
+                                            if current_target != "random" && crate::puppet_parts::is_puppet(&current_target) {
+                                                ui.label("Part:");
+                                                let part_text = current_part.map(crate::puppet_parts::label).unwrap_or_else(|| "Whole body".to_string());
+                                                egui::ComboBox::from_id_salt("target_part_combo")
+                                                    .selected_text(part_text)
+                                                    .show_ui(ui, |ui| {
+                                                        if ui.selectable_label(current_part.is_none(), "Whole body").clicked() {
+                                                            item.config.set_target(current_target.clone());
+                                                            item.is_dirty = true;
+                                                        }
+                                                        ui.separator();
+                                                        for part in crate::puppet_parts::PARTS {
+                                                            if ui.selectable_label(current_part == Some(part), crate::puppet_parts::label(part)).clicked() {
+                                                                item.config.set_target(crate::puppet_parts::with_part(&current_target, Some(part)));
+                                                                item.is_dirty = true;
+                                                            }
+                                                        }
+                                                    })
+                                                    .response
+                                                    .on_hover_text("The avatar's own left and right. A throw aimed at a part can still hit what's in its way.");
+                                            }
                                         });
 
                                         // Redeem Type selector

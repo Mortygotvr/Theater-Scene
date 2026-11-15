@@ -963,6 +963,14 @@ impl PhysicsEngine {
                 }
             }
         };
+        // A Theater Puppet body part ("Puppet:head"): its centre instead
+        let (tx, ty) = {
+            let masks = get_state().masks.read();
+            let slots = get_state().target_slots.read();
+            crate::puppet_parts::aim(&target_name, &slots, &masks)
+        }
+        .unwrap_or((tx, ty));
+        let aims_at_part = crate::puppet_parts::split(&target_name).1.is_some();
 
         // Start sound
         let start_sound = pkg.start_sound
@@ -1032,7 +1040,10 @@ impl PhysicsEngine {
                     let slots = get_state().target_slots.read();
                     let hitboxes = get_state().hitboxes.read();
                     let target_hb = crate::resolve_target_hitbox(&target_name, &slots, &hitboxes).map(|(_, v)| v);
-                    if let Some(hb) = target_hb {
+                    if aims_at_part {
+                        // Over the body part, a little either side
+                        sx = tx + (rand_f32() - 0.5) * 20.0;
+                    } else if let Some(hb) = target_hb {
                         if hb.active && hb.world_width > 0.0 {
                             sx = hb.world_center_x + (rand_f32() - 0.5) * (hb.world_width * 0.4).min(40.0);
                         } else {
@@ -1174,6 +1185,8 @@ impl PhysicsEngine {
             }
             match th.state {
                 ThrowableState::Flying => {
+                    // A Theater Puppet body part's centre, steered at instead of the box's
+                    let part_aim = crate::puppet_parts::aim(&th.target_name, &slots, &masks);
                     let fallback_hb;
                     let target_hb = if let Some((_, v)) = crate::resolve_target_hitbox(&th.target_name, &slots, &hitboxes) {
                         Some(v)
@@ -1210,7 +1223,9 @@ impl PhysicsEngine {
                     // would keep re-entering this branch and sit rotating in
                     // place at the target forever, never dying.
                     if th.action == ActionType::Swirl && !th.has_hit {
-                        let (tx, ty) = if let Some(hb) = target_hb {
+                        let (tx, ty) = if let Some(p) = part_aim {
+                            p
+                        } else if let Some(hb) = target_hb {
                             // Swirl around the mask's center of mass, like the throw itself aims at
                             if hb.active && hb.world_center_x > 0.0 {
                                 (hb.world_center_x, hb.world_center_y)
@@ -1235,6 +1250,7 @@ impl PhysicsEngine {
                         }
 
                         if !th.has_hit && th.swirl_radius < 30.0 {
+                            crate::puppet_parts::report_hit(&th.target_name, &slots, &masks, tx, ty, th.speed);
                             Self::trigger_impact_internal(th, target_hb, &hitboxes, &slots, &mut new_particles, &mut new_impacts, &self.redeem_images, &self.id_to_redeem_key);
                         }
                     } else {
@@ -1245,7 +1261,9 @@ impl PhysicsEngine {
                         th.vy += th.gravity * dt;
 
                         if th.snap_bottom {
-                            let (tx, ty) = if let Some(hb) = target_hb {
+                            let (tx, ty) = if let Some(p) = part_aim {
+                                p
+                            } else if let Some(hb) = target_hb {
                                 // Point the bottom at the mask's center of mass, like the throw itself aims at
                                 if hb.active && hb.world_center_x > 0.0 {
                                     (hb.world_center_x, hb.world_center_y)
@@ -1315,6 +1333,8 @@ impl PhysicsEngine {
                                         if is_solid {
                                             th.x = hit_x;
                                             th.y = hit_y;
+                                            let force = (th.vx * th.vx + th.vy * th.vy).sqrt();
+                                            crate::puppet_parts::report_hit(&th.target_name, &slots, &masks, hit_x, hit_y, force);
                                             Self::trigger_impact_internal(th, Some(hb), &hitboxes, &slots, &mut new_particles, &mut new_impacts, &self.redeem_images, &self.id_to_redeem_key);
                                         }
                                     }

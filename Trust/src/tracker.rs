@@ -57,8 +57,17 @@ impl CollisionMask {
 
     #[inline(always)]
     pub fn is_solid_world(&self, world_x: f32, world_y: f32) -> bool {
+        match self.world_to_local(world_x, world_y) {
+            Some((local_x, local_y)) if local_x >= 0.0 && local_y >= 0.0 => self.is_solid_local(local_x as u32, local_y as u32),
+            _ => false,
+        }
+    }
+
+    /// The source's own pixel at canvas point (world_x, world_y), through
+    /// its move, scale, crop, rotation and 3D turn (None when it's edge-on).
+    pub fn world_to_local(&self, world_x: f32, world_y: f32) -> Option<(f32, f32)> {
         if self.transform.scale_x.abs() < f32::EPSILON || self.transform.scale_y.abs() < f32::EPSILON {
-            return false;
+            return None;
         }
 
         let eff_w = self.width as f32 * self.transform.scale_x;
@@ -97,7 +106,7 @@ impl CollisionMask {
 
         let det = a00 * a11 - a01 * a10;
         if det.abs() < 1e-6 {
-            return false;
+            return None;
         }
 
         let lx = (dx * a11 - dy * a01) / det;
@@ -105,12 +114,20 @@ impl CollisionMask {
 
         let local_x = (lx + eff_w / 2.0) / self.transform.scale_x + self.transform.crop_left as f32;
         let local_y = (ly + eff_h / 2.0) / self.transform.scale_y + self.transform.crop_top as f32;
+        Some((local_x, local_y))
+    }
 
-        if local_x >= 0.0 && local_y >= 0.0 {
-            self.is_solid_local(local_x as u32, local_y as u32)
-        } else {
-            false
-        }
+    /// The canvas point of the source's own pixel (local_x, local_y): the
+    /// reverse of `world_to_local`.
+    pub fn local_to_world(&self, local_x: f32, local_y: f32) -> (f32, f32) {
+        let t = &self.transform;
+        let eff_w = self.width as f32 * t.scale_x;
+        let eff_h = self.height as f32 * t.scale_y;
+        let cx = t.pos_x + eff_w / 2.0;
+        let cy = t.pos_y + eff_h / 2.0;
+        let ux = (local_x - t.crop_left as f32) * t.scale_x;
+        let uy = (local_y - t.crop_top as f32) * t.scale_y;
+        project_3d_canvas(ux - eff_w / 2.0, uy - eff_h / 2.0, cx, cy, t.rot_deg, self.pitch, self.yaw)
     }
 
     #[inline(always)]

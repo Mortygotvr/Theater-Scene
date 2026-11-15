@@ -27,6 +27,7 @@ pub mod render_gate;
 pub mod trigger_builder;
 pub mod supporters;
 pub mod paths;
+pub mod puppet_parts;
 
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
@@ -1205,6 +1206,8 @@ pub fn resolve_target_hitbox<'a>(
     slots: &'a HashMap<usize, String>,
     hitboxes: &'a HashMap<String, Hitbox>,
 ) -> Option<(&'a str, &'a Hitbox)> {
+    // A Theater Puppet body part ("Puppet:head") is aimed at within its source's box
+    let target = puppet_parts::split(target).0;
     // 0. Random target
     if target.eq_ignore_ascii_case("random") {
         let active_tgts: Vec<(&'a str, &'a Hitbox)> = hitboxes.iter()
@@ -1267,6 +1270,8 @@ pub fn resolve_target_mask<'a>(
     slots: &'a HashMap<usize, String>,
     masks: &'a HashMap<String, CollisionMask>,
 ) -> Option<(&'a str, &'a CollisionMask)> {
+    // A Theater Puppet body part ("Puppet:head") collides with its source's mask
+    let target = puppet_parts::split(target).0;
     if let Some((k, m)) = masks.get_key_value(target) {
         return Some((k.as_str(), m));
     }

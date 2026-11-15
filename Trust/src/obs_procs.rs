@@ -160,6 +160,70 @@ pub fn call_play_sound(path: &std::path::Path, volume: f32) -> Option<Result<(),
     result
 }
 
+// ---------------------------------------------------------------------------
+// Theater Puppet's body parts (puppet_parts)
+
+const PUPPET_PARTS: &CStr = c"theater_puppet_parts";
+const PUPPET_PART_AT: &CStr = c"theater_puppet_part_at";
+const IMPACT_DECL: &CStr = c"void theater_scene_impact(string source, string part, float x, float y, float force)";
+const IMPACT: &CStr = c"theater_scene_impact";
+
+/// Theater Puppet's `theater_puppet_parts` for the Puppet source `source`:
+/// its parts' boxes as JSON. None without Theater Puppet, or for a source
+/// that isn't one ("{}").
+pub fn puppet_parts(source: &str) -> Option<String> {
+    let obs = obs()?;
+    let mut cd = Calldata { stack: std::ptr::null_mut(), size: 0, capacity: 0, fixed: false };
+    set_string(obs, &mut cd, c"source", source);
+    let called = unsafe { (obs.proc_handler_call)(obs.proc_handler, PUPPET_PARTS.as_ptr(), &mut cd) };
+    let json = called.then(|| get_string(obs, &mut cd, c"json"));
+    if !cd.stack.is_null() {
+        unsafe { (obs.bfree)(cd.stack as *mut c_void) };
+    }
+    json.filter(|j| j.len() > 2)
+}
+
+/// Theater Puppet's `theater_puppet_part_at`: the body part at (x, y) of
+/// the Puppet source `source`, its own pixels. None for none.
+pub fn puppet_part_at(source: &str, x: f32, y: f32) -> Option<String> {
+    let obs = obs()?;
+    let mut cd = Calldata { stack: std::ptr::null_mut(), size: 0, capacity: 0, fixed: false };
+    set_string(obs, &mut cd, c"source", source);
+    for (name, v) in [(c"x", x as f64), (c"y", y as f64)] {
+        unsafe { (obs.calldata_set_data)(&mut cd, name.as_ptr(), &v as *const f64 as *const c_void, size_of::<f64>()) };
+    }
+    let called = unsafe { (obs.proc_handler_call)(obs.proc_handler, PUPPET_PART_AT.as_ptr(), &mut cd) };
+    let part = called.then(|| get_string(obs, &mut cd, c"part"));
+    if !cd.stack.is_null() {
+        unsafe { (obs.bfree)(cd.stack as *mut c_void) };
+    }
+    part.filter(|p| !p.is_empty())
+}
+
+/// Signal `theater_scene_impact(string source, string part, float x, float y,
+/// float force)`: a throwable hit `source` at (x, y) on the canvas; `part`
+/// is the body part of a Theater Puppet source ("" otherwise). For Theater
+/// Puppet's reactions, or anything listening.
+pub fn emit_impact(source: &str, part: &str, x: f32, y: f32, force: f32) {
+    let Some(obs) = obs() else { return };
+    static DECLARED: std::sync::Once = std::sync::Once::new();
+    DECLARED.call_once(|| unsafe {
+        (obs.signal_handler_add)(obs.signal_handler, IMPACT_DECL.as_ptr());
+    });
+    let mut cd = Calldata { stack: std::ptr::null_mut(), size: 0, capacity: 0, fixed: false };
+    set_string(obs, &mut cd, c"source", source);
+    set_string(obs, &mut cd, c"part", part);
+    for (name, v) in [(c"x", x as f64), (c"y", y as f64), (c"force", force as f64)] {
+        unsafe { (obs.calldata_set_data)(&mut cd, name.as_ptr(), &v as *const f64 as *const c_void, size_of::<f64>()) };
+    }
+    unsafe {
+        (obs.signal_handler_signal)(obs.signal_handler, IMPACT.as_ptr(), &mut cd);
+        if !cd.stack.is_null() {
+            (obs.bfree)(cd.stack as *mut c_void);
+        }
+    }
+}
+
 /// Tells listeners (the Control Panel) that poses or redeems changed. Any thread.
 pub fn notify_list_changed() {
     if !REGISTERED.load(Ordering::SeqCst) {
