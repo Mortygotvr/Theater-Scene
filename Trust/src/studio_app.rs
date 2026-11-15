@@ -3204,7 +3204,9 @@ impl StudioApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         crate::obs_source::refresh_obs_scenes();
         let state = get_state();
-        let cur_scene = state.studio_scene_name.read().clone();
+        // The scene live in OBS: the name Theater last saw can be another
+        // collection's (or the "Scène" default), whose sources never load
+        let cur_scene = crate::obs_source::current_obs_scene_name().unwrap_or_else(|| state.studio_scene_name.read().clone());
         let scene_to_use = if cur_scene.is_empty() { "Scène".to_string() } else { cur_scene };
         *state.studio_scene_name.write() = scene_to_use.clone();
 

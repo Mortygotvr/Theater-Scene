@@ -1913,6 +1913,7 @@ pub fn sync_studio_sources_for_scene(scene_name: &str) {
     let fns = match init_scene_fns() {
         Some(f) => f,
         None => {
+            trust_log(&format!("[Trust Studio] ⚠️ Sources of '{}' not loaded: OBS's scene functions aren't there yet", scene_name));
             sort_studio_sources_in_good_order();
             return;
         }
@@ -1925,12 +1926,14 @@ pub fn sync_studio_sources_for_scene(scene_name: &str) {
 
     let scene_src = unsafe { (fns.obs_get_source_by_name)(c_scene.as_ptr()) };
     if scene_src.is_null() {
+        trust_log(&format!("[Trust Studio] ⚠️ Sources of '{}' not loaded: OBS has no source by that name", scene_name));
         sort_studio_sources_in_good_order();
         return;
     }
 
     let scene = unsafe { (fns.obs_scene_from_source)(scene_src) };
     if scene.is_null() {
+        trust_log(&format!("[Trust Studio] ⚠️ Sources of '{}' not loaded: it isn't a scene", scene_name));
         unsafe { (fns.obs_source_release)(scene_src); }
         sort_studio_sources_in_good_order();
         return;
@@ -1963,6 +1966,7 @@ pub fn sync_studio_sources_for_scene(scene_name: &str) {
     }
 
     if obs_items.is_empty() {
+        trust_log(&format!("[Trust Studio] ⚠️ Sources of '{}' not loaded: OBS listed no items in it", scene_name));
         sort_studio_sources_in_good_order();
         return;
     }
@@ -2015,6 +2019,13 @@ pub fn sync_studio_sources_for_scene(scene_name: &str) {
         crate::queue_studio_transform_update(s);
     }
 
+    trust_log(&format!(
+        "[Trust Studio] 🎬 Sources of '{}': {} item(s), {} target(s) {:?}",
+        scene_name,
+        new_sources.len(),
+        new_sources.iter().filter(|s| s.is_target).count(),
+        new_sources.iter().filter(|s| s.is_target).map(|s| s.name.as_str()).collect::<Vec<_>>()
+    ));
     *state.studio_sources.write() = new_sources.clone();
     crate::studio_app::save_targets_to_disk(&new_sources);
 
