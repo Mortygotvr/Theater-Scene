@@ -26,6 +26,56 @@ pub const PARTS: [&str; 10] = [
 /// How long a source's parts are kept before asking Puppet again (it
 /// redraws them ten times a second)
 const FRESH: Duration = Duration::from_millis(100);
+const NOT_PUPPET_FRESH: Duration = Duration::from_secs(2);
+
+/// Each Puppet source's parts as hitboxes of their own, "Source:part":
+/// the source's box and mass, centred on the part. Every effect aims at a
+/// target's centre (resolve_target_hitbox), so they all aim at the part,
+/// and still collide with the whole source. Called every frame (the
+/// Throwables Layer's tick), it works at most every FRESH.
+pub fn refresh_hitboxes() {
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|t| t.elapsed() < FRESH) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+    let state = crate::state::get_state();
+    // The masks' placements, copied (no lock held while Puppet is asked)
+    let placed: Vec<(String, u32, u32, crate::types::SourceTransform, f32, f32)> = state
+        .masks
+        .read()
+        .iter()
+        .filter(|(name, _)| split_named(name).1.is_none())
+        .map(|(name, m)| (name.clone(), m.width, m.height, m.transform, m.pitch, m.yaw))
+        .collect();
+    let mut found: Vec<(String, Vec<(&'static str, (f32, f32))>)> = Vec::new();
+    for (name, w, h, t, pitch, yaw) in placed {
+        let Some(parts) = parts_of(&name) else { continue };
+        let points = PARTS
+            .iter()
+            .filter_map(|&part| {
+                let &(cx, cy) = parts.centres.get(part)?;
+                let (lx, ly) = (cx * w as f32 / parts.width.max(1.0), cy * h as f32 / parts.height.max(1.0));
+                Some((part, crate::tracker::local_to_world(w, h, &t, pitch, yaw, lx, ly)))
+            })
+            .collect();
+        found.push((name, points));
+    }
+    let mut hitboxes = state.hitboxes.write();
+    hitboxes.retain(|name, _| split_named(name).1.is_none());
+    for (name, points) in found {
+        let Some(whole) = hitboxes.get(&name).copied() else { continue };
+        for (part, (x, y)) in points {
+            let mut hb = whole;
+            hb.world_center_x = x;
+            hb.world_center_y = y;
+            hitboxes.insert(with_part(&name, Some(part)), hb);
+        }
+    }
+}
 
 /// `Puppet:head` -> ("Puppet", Some("head")); `head` -> ("1", Some("head"))
 /// (the avatar in slot 1); anything else -> (target, None)
@@ -51,6 +101,23 @@ pub fn split_named(target: &str) -> (&str, Option<&'static str>) {
         }
     }
     (target, None)
+}
+
+/// The source a target's reaction belongs to: a body part's source
+/// ("Avatar:head" -> "Avatar", "head" -> slot 1's name); any other target
+/// as it is
+pub fn reaction_target(target: &str) -> String {
+    let (base, part) = split(target);
+    if part.is_none() {
+        return target.to_string();
+    }
+    if let Ok(slot) = base.trim().parse::<usize>() {
+        // try_read: this runs inside the physics step, which may hold it
+        if let Some(name) = crate::state::get_state().target_slots.try_read().and_then(|s| s.get(&slot).cloned()) {
+            return name;
+        }
+    }
+    base.to_string()
 }
 
 /// A target naming `part` of `source` (none: the whole source)
@@ -100,7 +167,8 @@ fn parts_of(source: &str) -> Option<Parts> {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
     if let Some((at, parts)) = cache.get(source) {
-        if at.elapsed() < FRESH {
+        // A source that isn't a Puppet is asked again less often
+        if at.elapsed() < if parts.is_some() { FRESH } else { NOT_PUPPET_FRESH } {
             return parts.clone();
         }
     }
@@ -174,6 +242,35 @@ mod tests {
         assert_eq!(with_part("🎭 Theater Puppet", Some("head")), "🎭 Theater Puppet:head");
         assert_eq!(with_part("Cam", None), "Cam");
         assert_eq!(label("left_hand"), "Left hand");
+    }
+
+    #[test]
+    fn a_part_target_resolves_to_its_own_hitbox() {
+        use crate::types::Hitbox;
+        let whole = Hitbox { world_x: 0.0, world_y: 0.0, world_width: 1080.0, world_height: 1080.0, world_center_x: 540.0, world_center_y: 600.0, active: true, ..Hitbox::default() };
+        let head = Hitbox { world_center_x: 541.0, world_center_y: 245.0, ..whole };
+        let mut hitboxes = HashMap::new();
+        hitboxes.insert("Avatar".to_string(), whole);
+        hitboxes.insert("Avatar:head".to_string(), head);
+        let mut slots = HashMap::new();
+        slots.insert(1usize, "Avatar".to_string());
+        // Named, and by slot 1
+        for target in ["Avatar:head", "head", "1:head"] {
+            let (name, hb) = crate::resolve_target_hitbox(target, &slots, &hitboxes).unwrap();
+            assert_eq!((name, hb.world_center_y), ("Avatar:head", 245.0), "{target}");
+        }
+        // Its reaction is the source's
+        assert_eq!(reaction_target("Avatar:head"), "Avatar");
+        assert_eq!(reaction_target("Avatar"), "Avatar");
+        assert_eq!(reaction_target("2"), "2");
+        // A part not in view: the whole source
+        let (name, hb) = crate::resolve_target_hitbox("Avatar:left_hand", &slots, &hitboxes).unwrap();
+        assert_eq!((name, hb.world_center_y), ("Avatar", 600.0));
+        // The whole source as before, and Random never picks a part
+        assert_eq!(crate::resolve_target_hitbox("Avatar", &slots, &hitboxes).unwrap().0, "Avatar");
+        for _ in 0..50 {
+            assert_eq!(crate::resolve_target_hitbox("random", &slots, &hitboxes).unwrap().0, "Avatar");
+        }
     }
 
     #[test]

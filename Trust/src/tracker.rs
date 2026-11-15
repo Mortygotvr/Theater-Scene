@@ -120,14 +120,7 @@ impl CollisionMask {
     /// The canvas point of the source's own pixel (local_x, local_y): the
     /// reverse of `world_to_local`.
     pub fn local_to_world(&self, local_x: f32, local_y: f32) -> (f32, f32) {
-        let t = &self.transform;
-        let eff_w = self.width as f32 * t.scale_x;
-        let eff_h = self.height as f32 * t.scale_y;
-        let cx = t.pos_x + eff_w / 2.0;
-        let cy = t.pos_y + eff_h / 2.0;
-        let ux = (local_x - t.crop_left as f32) * t.scale_x;
-        let uy = (local_y - t.crop_top as f32) * t.scale_y;
-        project_3d_canvas(ux - eff_w / 2.0, uy - eff_h / 2.0, cx, cy, t.rot_deg, self.pitch, self.yaw)
+        local_to_world(self.width, self.height, &self.transform, self.pitch, self.yaw, local_x, local_y)
     }
 
     #[inline(always)]
@@ -236,6 +229,17 @@ pub fn matches_pixel(r: u8, g: u8, b: u8, a: u8, config: &TrackingConfig) -> boo
         }
         _ => a >= config.alpha_threshold,
     }
+}
+
+/// CollisionMask::local_to_world, from a mask's size and placement alone
+pub fn local_to_world(width: u32, height: u32, t: &SourceTransform, pitch: f32, yaw: f32, local_x: f32, local_y: f32) -> (f32, f32) {
+    let eff_w = width as f32 * t.scale_x;
+    let eff_h = height as f32 * t.scale_y;
+    let cx = t.pos_x + eff_w / 2.0;
+    let cy = t.pos_y + eff_h / 2.0;
+    let ux = (local_x - t.crop_left as f32) * t.scale_x;
+    let uy = (local_y - t.crop_top as f32) * t.scale_y;
+    project_3d_canvas(ux - eff_w / 2.0, uy - eff_h / 2.0, cx, cy, t.rot_deg, pitch, yaw)
 }
 
 #[inline(always)]

@@ -351,6 +351,9 @@ impl TargetFrame {
     /// a Studio source with a size, or the source list is busy — this runs
     /// inside the physics step, hence try_read (see the PixelDrip note below).
     pub fn find(target: &str, tracked: Option<&str>) -> Option<Self> {
+        // A Theater Puppet body part ("Avatar:head") is in its source's frame
+        let target = crate::puppet_parts::split_named(target).0;
+        let tracked = tracked.map(|name| crate::puppet_parts::split_named(name).0);
         let sources = crate::state::get_state().studio_sources.try_read()?;
         let src = tracked
             .and_then(|name| sources.iter().find(|s| s.name == name))
@@ -432,6 +435,10 @@ fn fire_impact_reaction_local(
     target_hb: Option<&crate::types::Hitbox>,
     new_particles: &mut Vec<Particle>,
 ) {
+    // The source reacts, whichever of its Theater Puppet body parts was aimed at:
+    // its reaction is kept under its own name, the one it's drawn by
+    let source_name = crate::puppet_parts::reaction_target(target_name);
+    let target_name = source_name.as_str();
     match reaction.kind {
         ImpactReactionKind::Bounce | ImpactReactionKind::Jolt | ImpactReactionKind::PixelDrip | ImpactReactionKind::Custom(_) => {
             // Persistent per-frame reaction: the render pass reads this every
@@ -940,7 +947,8 @@ impl PhysicsEngine {
             let slots = get_state().target_slots.read();
             let hitboxes = get_state().hitboxes.read();
             if let Some((name, hb)) = crate::resolve_target_hitbox(&target_name, &slots, &hitboxes) {
-                tracked_target = Some(name.to_string());
+                // The source's own name (its pixel grid), not its Puppet body part's
+                tracked_target = Some(crate::puppet_parts::split_named(name).0.to_string());
                 if hb.active && hb.world_center_x > 0.0 && hb.world_center_y > 0.0 {
                     (hb.world_center_x, hb.world_center_y)
                 } else if hb.active && hb.world_width > 0.0 {

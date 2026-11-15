@@ -2397,6 +2397,8 @@ unsafe extern "C" fn source_video_tick(_data: *mut c_void, seconds: f32) {
     LAST_TICK_SECONDS.store(dt.to_bits(), std::sync::atomic::Ordering::Relaxed);
     // The current scene's items are drawn by this layer only (render_gate)
     crate::render_gate::tick();
+    // Theater Puppet's body parts as targets ("Avatar:head")
+    crate::puppet_parts::refresh_hitboxes();
 
     // Fallback: If source_video_render did not run since the last tick (e.g. source is hidden in OBS scene),
     // step physics here so physics/effects simulation doesn't stall when hidden.

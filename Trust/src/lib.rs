@@ -1206,12 +1206,24 @@ pub fn resolve_target_hitbox<'a>(
     slots: &'a HashMap<usize, String>,
     hitboxes: &'a HashMap<String, Hitbox>,
 ) -> Option<(&'a str, &'a Hitbox)> {
-    // A Theater Puppet body part ("Puppet:head") is aimed at within its source's box
-    let target = puppet_parts::split(target).0;
+    // A Theater Puppet body part ("Puppet:head", or "head" for slot 1): the
+    // source's own hitbox centred on the part (puppet_parts::refresh_hitboxes),
+    // which every effect aims at; the source's while the part isn't in view
+    if let (base, Some(part)) = puppet_parts::split(target) {
+        let (name, whole) = resolve_target_hitbox(base, slots, hitboxes)?;
+        let key = puppet_parts::with_part(name, Some(part));
+        if let Some((k, hb)) = hitboxes.get_key_value(&key) {
+            if hb.active {
+                return Some((k.as_str(), hb));
+            }
+        }
+        return Some((name, whole));
+    }
     // 0. Random target
     if target.eq_ignore_ascii_case("random") {
         let active_tgts: Vec<(&'a str, &'a Hitbox)> = hitboxes.iter()
-            .filter(|(_, hb)| hb.active && hb.world_width > 0.0)
+            // Sources, not their Puppet body parts (one chance each)
+            .filter(|(k, hb)| hb.active && hb.world_width > 0.0 && puppet_parts::split_named(k).1.is_none())
             .map(|(k, hb)| (k.as_str(), hb))
             .collect();
         if !active_tgts.is_empty() {
