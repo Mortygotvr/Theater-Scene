@@ -267,6 +267,10 @@ pub struct RedeemConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_impact_lua: Option<String>,
 
+    /// The "puppet" type's command for Theater Puppet (puppet_redeem.rs)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub puppet: Option<serde_json::Value>,
+
     // Local file path caches
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_file_path: Option<String>,
@@ -410,6 +414,7 @@ impl Default for RedeemConfig {
                 "jolt": { "enabled": false, "intensity": 0.8, "duration_ms": 400 }
             })),
             on_impact_lua: None,
+            puppet: None,
             image_file_path: None,
             start_sound_path: None,
             collision_sound_path: None,
@@ -5738,6 +5743,7 @@ impl StudioApp {
                                                 "webgl-lightning" => "⚡ Lightning / Electricity",
                                                 "reaction" => "💥 Reaction Only (No Throwable)",
                                                 "custom" => "📜 Custom Lua Script",
+                                                "puppet" => "🎭 Puppet (Theater Puppet avatar)",
                                                 _ => "🖼️ Image / Throwable",
                                             };
 
@@ -5806,6 +5812,13 @@ impl StudioApp {
                                                         .clicked()
                                                     {
                                                         item.config.redeem_type = "custom".to_string();
+                                                        item.is_dirty = true;
+                                                    }
+                                                    if ui.selectable_label(item.config.redeem_type == "puppet", "🎭 Puppet (Theater Puppet avatar)")
+                                                        .on_hover_text("Drives a Theater Puppet avatar: an animation, a shape key, a GLB shown or hidden, a colour slot.")
+                                                        .clicked()
+                                                    {
+                                                        item.config.redeem_type = "puppet".to_string();
                                                         item.is_dirty = true;
                                                     }
                                                 });
@@ -6318,6 +6331,15 @@ impl StudioApp {
                                                     "No throwable, no particle effect. Configure the Launch Audio (below) \
                                                      and the Impact Reaction (further down) — that's the whole redeem."
                                                 ).italics().color(Color32::from_rgb(148, 163, 184)));
+                                            });
+                                    }
+                                    "puppet" => {
+                                        egui::CollapsingHeader::new("🎭 PUPPET")
+                                            .default_open(true)
+                                            .show(ui, |ui| {
+                                                if crate::puppet_redeem::editor_ui(ui, &mut item.config.puppet) {
+                                                    item.is_dirty = true;
+                                                }
                                             });
                                     }
                                     "custom" => {
@@ -7604,6 +7626,8 @@ pub fn dispatch_test_redeem_json(json_str: &str) -> bool {
             crate::physics::fire_impact_reaction(&cfg, &target_source_name, center_x, center_y);
             println!("[Trust] 💥 Fired reaction-only test targeting '{}'", target_source_name);
             return true;
+        } else if rtype == "puppet" {
+            return crate::puppet_redeem::fire(&val, &wildcards);
         } else if rtype == "custom" {
             let mut script = val.get("custom_redeem_script")
                 .or_else(|| val.get("customRedeemScript"))

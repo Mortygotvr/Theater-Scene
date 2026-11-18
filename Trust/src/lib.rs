@@ -28,6 +28,7 @@ pub mod trigger_builder;
 pub mod supporters;
 pub mod paths;
 pub mod puppet_parts;
+pub mod puppet_redeem;
 
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
