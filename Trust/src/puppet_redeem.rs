@@ -70,11 +70,12 @@ fn puppets() -> Vec<Value> {
     cache.as_ref().map(|(_, l)| l.clone()).unwrap_or_default()
 }
 
-const ACTIONS: [(&str, &str); 5] = [
+const ACTIONS: [(&str, &str); 6] = [
     ("animation", "🎬 Play an animation"),
     ("shape", "🙂 Shape key on / off / ping-pong"),
     ("shape_anim", "📈 Animate a shape key"),
     ("glb", "👁 Show / hide a GLB"),
+    ("group", "🔀 Show a GLB of a group"),
     ("color", "🎨 Set a colour slot"),
 ];
 
@@ -236,6 +237,22 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                 "hide" => json!(false),
                 _ => json!("toggle"),
             };
+        }
+        "group" => {
+            changed |= text_with_choices(ui, "Group:", cmd, "group", &list("groups"), "as in the Puppet's properties");
+            // That group's GLBs, then next / none
+            let group = get_str(cmd, "group", "").trim().to_string();
+            let mut picks: Vec<String> = glbs
+                .iter()
+                .filter(|g| g.get("group").and_then(|v| v.as_str()).is_some_and(|v| !group.is_empty() && v.trim().eq_ignore_ascii_case(&group)))
+                .filter_map(|g| g.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect();
+            picks.extend(["next".to_string(), "none".to_string()]);
+            if cmd.get("glb").is_none() {
+                cmd["glb"] = json!("next");
+                changed = true;
+            }
+            changed |= text_with_choices(ui, "Show:", cmd, "glb", &picks, "a GLB, next or none");
         }
         "color" => {
             let slots = list("colour_slots");
