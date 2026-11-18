@@ -297,7 +297,10 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                 changed |= text_with_choices(ui, "Cell:", cmd, "cell", &["next".to_string(), "random".to_string()], "0 = top left, across then down; next; random; {1}");
             }
             changed |= choice(ui, "State:", cmd, "state", &[("on", "On"), ("off", "Off (back to its own)"), ("toggle", "Toggle")]);
-            changed |= slider(ui, "Strength", cmd, "value", 0.0..=1.0, 1.0, "");
+            // (A strength would slide the texture between tiles, not fade: the crossfade does that)
+            if let Some(m) = cmd.as_object_mut() {
+                m.remove("value");
+            }
         }
         "color" => {
             let slots = list("colour_slots");
@@ -337,6 +340,11 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
             cmd["color"] = json!(text);
         }
         _ => {}
+    }
+    // A GLB dissolving in or out, a tile crossfading
+    if matches!(action.as_str(), "glb" | "group" | "shape_anim" | "tile") {
+        let label = if action == "tile" { "Crossfade" } else { "Fade (GLB in / out)" };
+        changed |= slider(ui, label, cmd, "fade", 0.0..=5.0, 0.0, " s");
     }
     changed
 }
