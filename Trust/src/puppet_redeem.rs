@@ -70,12 +70,13 @@ fn puppets() -> Vec<Value> {
     cache.as_ref().map(|(_, l)| l.clone()).unwrap_or_default()
 }
 
-const ACTIONS: [(&str, &str); 6] = [
+const ACTIONS: [(&str, &str); 7] = [
     ("animation", "🎬 Play an animation"),
     ("shape", "🙂 Shape key on / off / ping-pong"),
     ("shape_anim", "📈 Animate a shape key"),
     ("glb", "👁 Show / hide a GLB"),
     ("group", "🔀 Show a GLB of a group"),
+    ("tile", "🧩 Tile texture"),
     ("color", "🎨 Set a colour slot"),
 ];
 
@@ -253,6 +254,50 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                 changed = true;
             }
             changed |= text_with_choices(ui, "Show:", cmd, "glb", &picks, "a GLB, next or none");
+        }
+        "tile" => {
+            changed |= text_with_choices(ui, "GLB:", cmd, "glb", &glb_choices, "0 = the avatar, or its name");
+            // The GLB picked: its tiles and materials
+            let glb = get_str(cmd, "glb", "0").trim().to_string();
+            let g = glb.parse::<usize>().ok().and_then(|i| glbs.get(i)).or_else(|| glbs.iter().find(|g| g.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(&glb))));
+            let names = |key: &str| -> Vec<String> {
+                g.and_then(|g| g.get(key)).and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default()
+            };
+            let mut by_name = cmd.get("name").and_then(|v| v.as_str()).is_some_and(|n| !n.is_empty()) || cmd.get("material").is_none();
+            ui.horizontal(|ui| {
+                if ui.radio_value(&mut by_name, true, "A tile of the model (VRM expression)").changed() | ui.radio_value(&mut by_name, false, "A cell of a grid").changed() {
+                    changed = true;
+                }
+            });
+            if by_name {
+                if let Some(m) = cmd.as_object_mut() {
+                    m.remove("material");
+                }
+                changed |= text_with_choices(ui, "Tile:", cmd, "name", &names("tiles"), "its name");
+            } else {
+                if cmd.get("material").is_none() {
+                    cmd["material"] = json!("");
+                    cmd["name"] = json!("");
+                    changed = true;
+                }
+                changed |= text_with_choices(ui, "Material:", cmd, "material", &names("materials"), "the texture's material");
+                for (key, label) in [("columns", "Columns"), ("rows", "Rows")] {
+                    let mut n = get_f(cmd, key, 2.0) as i64;
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        if ui.add(egui::DragValue::new(&mut n).range(1..=64)).changed() {
+                            changed = true;
+                        }
+                    });
+                    cmd[key] = json!(n);
+                }
+                if cmd.get("cell").is_none() {
+                    cmd["cell"] = json!("0");
+                }
+                changed |= text_with_choices(ui, "Cell:", cmd, "cell", &["next".to_string(), "random".to_string()], "0 = top left, across then down; next; random; {1}");
+            }
+            changed |= choice(ui, "State:", cmd, "state", &[("on", "On"), ("off", "Off (back to its own)"), ("toggle", "Toggle")]);
+            changed |= slider(ui, "Strength", cmd, "value", 0.0..=1.0, 1.0, "");
         }
         "color" => {
             let slots = list("colour_slots");
