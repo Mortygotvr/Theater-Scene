@@ -1087,10 +1087,28 @@ pub fn file_renamed(ty: &ScriptType, new: &Path) {
 }
 
 /// The folders Rhai filters are looked for in: the ones Theater ships, yours
-/// (paths::user_filters_dir), and
+/// (paths::user_filters_dir), the other Theater plugins' (each plugin's
+/// data\theater-scripts, next to this one: Theater Puppet's dock…), and
 /// the folders it remembers (remember_folder).
 pub fn script_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![crate::studio_app::get_filters_dir(), crate::paths::user_filters_dir()];
+    if !cfg!(test) {
+        if let Some(plugins) = crate::paths::data_dir().parent().and_then(|p| p.parent()) {
+            let mut others: Vec<PathBuf> = std::fs::read_dir(plugins)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path().join("data").join("theater-scripts"))
+                .filter(|d| d.is_dir())
+                .collect();
+            others.sort();
+            for dir in others {
+                if !dirs.contains(&dir) {
+                    dirs.push(dir);
+                }
+            }
+        }
+    }
     for dir in remembered_folders() {
         if !dirs.contains(&dir) {
             dirs.push(dir);

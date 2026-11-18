@@ -160,6 +160,22 @@ pub fn call_play_sound(path: &std::path::Path, volume: f32) -> Option<Result<(),
     result
 }
 
+/// Another plugin's procedure that takes `in string args` (JSON) and gives
+/// `out string json`: what a Rhai dock's `call_proc` calls. None when no
+/// procedure has that name.
+pub fn call_proc_json(name: &str, args: &str) -> Option<String> {
+    let obs = obs()?;
+    let name = CString::new(name).ok()?;
+    let mut cd = Calldata { stack: std::ptr::null_mut(), size: 0, capacity: 0, fixed: false };
+    set_string(obs, &mut cd, c"args", args);
+    let called = unsafe { (obs.proc_handler_call)(obs.proc_handler, name.as_ptr(), &mut cd) };
+    let json = called.then(|| get_string(obs, &mut cd, c"json"));
+    if !cd.stack.is_null() {
+        unsafe { (obs.bfree)(cd.stack as *mut c_void) };
+    }
+    json
+}
+
 // ---------------------------------------------------------------------------
 // Theater Puppet's body parts (puppet_parts)
 

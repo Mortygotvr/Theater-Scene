@@ -36,7 +36,10 @@
 //! "clear_chat" }`), `redeems()` / `trigger_redeem(name)`, `scenes()` /
 //! `current_scene()` / `switch_scene(name)`, `show_source(scene, source)` /
 //! `hide_source` / `toggle_source` (the current scene's with just the
-//! source), `open_studio()`. Plus what every script has: `log`,
+//! source), `open_studio()`, `call_proc(name, #{…})` (another plugin's OBS
+//! procedure taking `in string args` and giving `out string json`, like
+//! Theater Puppet's `theater_puppet_tracking`: the map it answers, or `()`
+//! when there's none). Plus what every script has: `log`,
 //! `share` / `shared_value`, `rgba`, `relay_connected()`…
 //!
 //! `this` keeps what the dock stores in it, across edits of the script too
@@ -384,6 +387,14 @@ unsafe extern "C" fn run_source_visibility(param: *mut c_void) {
     }
 }
 
+/// Another plugin's procedure, its answer as a map (`()`: no such procedure)
+fn call_proc(name: &str, args: &str) -> Dynamic {
+    match crate::obs_procs::call_proc_json(name, args) {
+        Some(json) if !json.trim().is_empty() => Dynamic::from_map(crate::script_filters::event_map(&json)),
+        _ => Dynamic::UNIT,
+    }
+}
+
 fn register_actions(engine: &mut Engine) {
     engine.register_fn("send_event", |event: Map| crate::script_feed::publish(&rhai::format_map_as_json(&event)));
     engine.register_fn("redeems", || -> Array {
@@ -398,6 +409,8 @@ fn register_actions(engine: &mut Engine) {
         engine.register_fn(name, move |source: &str| source_visibility("", source, action));
     }
     engine.register_fn("open_studio", crate::studio_app::launch_studio_native);
+    engine.register_fn("call_proc", |name: &str, args: Map| call_proc(name, &rhai::format_map_as_json(&args)));
+    engine.register_fn("call_proc", |name: &str| call_proc(name, "{}"));
 }
 
 /// The dock functions, in the engine every script runs in.
