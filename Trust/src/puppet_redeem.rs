@@ -1,7 +1,9 @@
 //! The "🎭 Puppet" redeem type: a redeem that drives a Theater Puppet avatar
 //! (the Theater-Puppet OBS plugin) through its procedure
 //! `theater_puppet_command`: play an animation, toggle or ping-pong a shape
-//! key, animate a shape key, show or hide a GLB, set a colour slot.
+//! key, animate a shape key, show or hide a GLB, set a colour slot, show a
+//! tile (and a shape key with it). Each but the shape-key animation takes a
+//! timer: then Puppet puts back what it changed.
 //!
 //! The redeem keeps the command as its `puppet` setting (the procedure's own
 //! JSON); its text settings take the redeem's wildcards ({1}, {2}…) when it
@@ -297,6 +299,12 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                 changed |= text_with_choices(ui, "Cell:", cmd, "cell", &["next".to_string(), "random".to_string()], "0 = top left, across then down; next; random; {1}");
             }
             changed |= choice(ui, "State:", cmd, "state", &[("on", "On"), ("off", "Off (back to its own)"), ("toggle", "Toggle")]);
+            // A shape key held while the tile shows (let go with it)
+            let k = keys(cmd);
+            changed |= text_with_choices(ui, "Shape key with it:", cmd, "key", &k, "empty: none");
+            if !get_str(cmd, "key", "").trim().is_empty() {
+                changed |= slider(ui, "Its strength", cmd, "key_value", 0.0..=1.0, 1.0, "");
+            }
             // (A strength would slide the texture between tiles, not fade: the crossfade does that)
             if let Some(m) = cmd.as_object_mut() {
                 m.remove("value");
@@ -345,6 +353,11 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
     if matches!(action.as_str(), "glb" | "group" | "shape_anim" | "tile") {
         let label = if action == "tile" { "Crossfade" } else { "Fade (GLB in / out)" };
         changed |= slider(ui, label, cmd, "fade", 0.0..=5.0, 0.0, " s");
+    }
+    // Back as it was after that long (a shape-key animation ends by itself)
+    if action != "shape_anim" {
+        changed |= slider(ui, "Timer (then back as it was; 0 = it stays)", cmd, "timer", 0.0..=600.0, 0.0, " s");
+        ui.label(egui::RichText::new("A colour, a GLB or group's Show, a tile and its shape key, a shape key, an animation: undone when the timer runs out.").small().color(egui::Color32::from_rgb(148, 163, 184)));
     }
     changed
 }
