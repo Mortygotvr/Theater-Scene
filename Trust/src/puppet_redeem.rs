@@ -2,7 +2,7 @@
 //! (the Theater-Puppet OBS plugin) through its procedure
 //! `theater_puppet_command`: play an animation, toggle or ping-pong a shape
 //! key, animate a shape key, show or hide a GLB, set a colour slot, show a
-//! tile (and a shape key with it). Each but the shape-key animation takes a
+//! tile (by name, or next / random in a set; and a shape key with it). Each but the shape-key animation takes a
 //! timer: then Puppet puts back what it changed.
 //!
 //! The redeem keeps the command as its `puppet` setting (the procedure's own
@@ -74,9 +74,10 @@ fn puppets() -> Vec<Value> {
 
 /// Pictures of a Puppet's tiles (Puppet's `tile_previews`, `ask` its
 /// request without the action), as textures, asked again every 5 seconds
-fn tile_pictures(ctx: &egui::Context, ask: Value) -> Vec<(String, egui::TextureHandle)> {
+/// (name, set, picture)
+fn tile_pictures(ctx: &egui::Context, ask: Value) -> Vec<(String, String, egui::TextureHandle)> {
     use base64::Engine;
-    type Cache = std::collections::HashMap<String, (std::time::Instant, Vec<(String, egui::TextureHandle)>)>;
+    type Cache = std::collections::HashMap<String, (std::time::Instant, Vec<(String, String, egui::TextureHandle)>)>;
     static CACHE: parking_lot::Mutex<Option<Cache>> = parking_lot::Mutex::new(None);
     let mut args = ask;
     args["action"] = json!("tile_previews");
@@ -93,14 +94,15 @@ fn tile_pictures(ctx: &egui::Context, ask: Value) -> Vec<(String, egui::TextureH
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| v.get("previews").and_then(|p| p.as_array()).cloned())
         .unwrap_or_default();
-    let pics: Vec<(String, egui::TextureHandle)> = previews
+    let pics: Vec<(String, String, egui::TextureHandle)> = previews
         .iter()
         .filter_map(|p| {
             let name = p.get("name")?.as_str()?.to_string();
             let png = base64::prelude::BASE64_STANDARD.decode(p.get("png")?.as_str()?).ok()?;
             let img = image::load_from_memory(&png).ok()?.to_rgba8();
             let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
-            Some((name.clone(), ctx.load_texture(format!("puppet_tile {key} {name}"), color, egui::TextureOptions::NEAREST)))
+            let set = p.get("set").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            Some((name.clone(), set, ctx.load_texture(format!("puppet_tile {key} {name}"), color, egui::TextureOptions::NEAREST)))
         })
         .collect();
     cache.insert(key, (std::time::Instant::now(), pics.clone()));
@@ -316,56 +318,64 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
             // The GLB picked: its tiles and materials
             let glb = get_str(cmd, "glb", "0").trim().to_string();
             let g = glb.parse::<usize>().ok().and_then(|i| glbs.get(i)).or_else(|| glbs.iter().find(|g| g.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(&glb))));
-            let names = |key: &str| -> Vec<String> {
-                g.and_then(|g| g.get(key)).and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default()
-            };
-            let mut by_name = cmd.get("name").and_then(|v| v.as_str()).is_some_and(|n| !n.is_empty()) || cmd.get("material").is_none();
-            ui.horizontal(|ui| {
-                if ui.radio_value(&mut by_name, true, "A tile of the model (VRM expression)").changed() | ui.radio_value(&mut by_name, false, "A cell of a grid").changed() {
-                    changed = true;
-                }
-            });
-            if by_name {
-                if let Some(m) = cmd.as_object_mut() {
-                    m.remove("material");
-                }
-                changed |= text_with_choices(ui, "Tile:", cmd, "name", &names("tiles"), "its name");
-                // Each tile, seen (a wildcard GLB has none to show)
-                if !glb.contains('{') && !names("tiles").is_empty() {
-                    let pics = tile_pictures(ui.ctx(), json!({ "source": source, "glb": glb }));
-                    if let Some(name) = picture_picker(ui, &pics, get_str(cmd, "name", "")) {
-                        cmd["name"] = json!(name);
-                        changed = true;
-                    }
-                }
-            } else {
-                if cmd.get("material").is_none() {
-                    cmd["material"] = json!("");
-                    cmd["name"] = json!("");
-                    changed = true;
-                }
-                changed |= text_with_choices(ui, "Material:", cmd, "material", &names("materials"), "the texture's material");
-                for (key, label) in [("columns", "Columns"), ("rows", "Rows")] {
-                    let mut n = get_f(cmd, key, 2.0) as i64;
+            // Its tile sets, each tile in order (Theater Rig: Make Tiles, or
+            // the VRM's expressions converted: "expressions")
+            let sets: Vec<(String, Vec<String>)> = g
+                .and_then(|g| g.get("tile_sets"))
+                .and_then(|m| m.as_object())
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.as_array().map(|a| a.iter().filter_map(|n| n.as_str().map(String::from)).collect()).unwrap_or_default())).collect())
+                .unwrap_or_default();
+            // An old redeem's grid (material, columns, rows, cell): it still works
+            let old_grid = cmd.get("material").and_then(|v| v.as_str()).is_some_and(|m| !m.is_empty());
+            if old_grid {
+                ui.label(egui::RichText::new("This redeem uses the old grid form (material / columns / rows / cell): it still works. Pick a tile to switch it to the standard one.").small().color(egui::Color32::from_rgb(234, 179, 8)));
+            }
+            if cmd.get("name").is_none() {
+                cmd["name"] = json!("next");
+                changed = true;
+            }
+            let mut choices: Vec<String> = sets.iter().flat_map(|(_, n)| n.clone()).collect();
+            choices.extend(["next".to_string(), "random".to_string()]);
+            let before = get_str(cmd, "name", "").to_string();
+            changed |= text_with_choices(ui, "Tile:", cmd, "name", &choices, "its name, next, random or {1}");
+            let mut picked: Option<(String, String)> = None;
+            let name = get_str(cmd, "name", "").trim().to_ascii_lowercase();
+            if name == "next" || name == "random" {
+                let set_names: Vec<String> = sets.iter().map(|(s, _)| s.clone()).collect();
+                changed |= text_with_choices(ui, "In set:", cmd, "set", &set_names, "empty: all the GLB's tiles");
+            }
+            // Each set, its tiles seen (a wildcard GLB has none to show)
+            if !glb.contains('{') && !sets.is_empty() {
+                let pics = tile_pictures(ui.ctx(), json!({ "source": source, "glb": glb }));
+                let current = get_str(cmd, "name", "").to_string();
+                for (set, _) in &sets {
                     ui.horizontal(|ui| {
-                        ui.label(label);
-                        if ui.add(egui::DragValue::new(&mut n).range(1..=64)).changed() {
-                            changed = true;
+                        ui.label(egui::RichText::new(if set.is_empty() { "(no set)" } else { set.as_str() }).strong());
+                        if ui.small_button("▶ next").on_hover_text("Each time: the next tile of this set").clicked() {
+                            picked = Some(("next".into(), set.clone()));
+                        }
+                        if ui.small_button("🎲 random").on_hover_text("Each time: another tile of this set").clicked() {
+                            picked = Some(("random".into(), set.clone()));
                         }
                     });
-                    cmd[key] = json!(n);
+                    let mine: Vec<(String, egui::TextureHandle)> = pics.iter().filter(|(_, s, _)| s == set).map(|(n, _, t)| (n.clone(), t.clone())).collect();
+                    if let Some(name) = picture_picker(ui, &mine, &current) {
+                        picked = Some((name, set.clone()));
+                    }
                 }
-                if cmd.get("cell").is_none() {
-                    cmd["cell"] = json!("0");
-                }
-                changed |= text_with_choices(ui, "Cell:", cmd, "cell", &["next".to_string(), "random".to_string()], "0 = top left, across then down; next; random; {1}");
-                // Each cell, seen
-                let material = get_str(cmd, "material", "").trim().to_string();
-                if !material.is_empty() && !material.contains('{') && !glb.contains('{') {
-                    let pics = tile_pictures(ui.ctx(), json!({ "source": source, "glb": glb, "material": material, "columns": cmd["columns"], "rows": cmd["rows"] }));
-                    if let Some(cell) = picture_picker(ui, &pics, get_str(cmd, "cell", "")) {
-                        cmd["cell"] = json!(cell);
-                        changed = true;
+            } else if sets.is_empty() && !glb.contains('{') {
+                ui.label(egui::RichText::new("This GLB has no tiles: make them in Theater Rig (Tile textures → Make Tiles, or Convert VRM Tiles), then export.").small().color(egui::Color32::from_rgb(148, 163, 184)));
+            }
+            if let Some((name, set)) = picked {
+                cmd["name"] = json!(name);
+                cmd["set"] = json!(set);
+                changed = true;
+            }
+            // A tile picked: the old grid's settings go
+            if old_grid && get_str(cmd, "name", "") != before {
+                if let Some(m) = cmd.as_object_mut() {
+                    for k in ["material", "columns", "rows", "cell"] {
+                        m.remove(k);
                     }
                 }
             }
