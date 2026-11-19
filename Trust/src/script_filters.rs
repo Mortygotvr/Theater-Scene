@@ -3370,9 +3370,20 @@ mod tests {
     }
 
     #[test]
-    fn rosia_chat_flows_either_way() {
+    fn the_chats_flow_either_way() {
         // (Rosia Chat is a filter of the user's own: skipped when it isn't there)
-        let Some(mut chat) = Chat::load("Rosia_chat.rhai") else { return };
+        let mut ran = 0;
+        for file in ["theater_chat.rhai", "legacy_chat.rhai", "Rosia_chat.rhai"] {
+            let Some(chat) = Chat::load(file) else { continue };
+            chat_flows_either_way(chat, file);
+            ran += 1;
+        }
+        assert!(ran >= 2, "Theater Chat and Legacy Chat are shipped");
+    }
+
+    fn chat_flows_either_way(mut chat: Chat, file: &str) {
+        let size: Array = chat.this.read_lock::<Map>().unwrap()["size"].clone().try_cast().unwrap();
+        let h = size[1].as_int().unwrap_or(0) as f32;
         // Each message's place: the top-level group drawing its text
         let y_of = |drawn: &[crate::script_draw::Cmd], words: &str| -> f32 {
             drawn
@@ -3385,19 +3396,19 @@ mod tests {
                     }
                     _ => None,
                 })
-                .unwrap_or_else(|| panic!("{words} drawn"))
+                .unwrap_or_else(|| panic!("{file}: {words} drawn"))
         };
         chat.event(r#"{"type":"chat","source":"Twitch","username":"Anna","message":"older"}"#);
         chat.event(r#"{"type":"chat","source":"Twitch","username":"Ben","message":"newest"}"#);
         // As before: the newest at the bottom, older above it
         let drawn = chat.frame_grouped(1.0);
         let (older, newest) = (y_of(&drawn, "older"), y_of(&drawn, "newest"));
-        assert!(newest > older && newest > 500.0, "newest at the bottom: {newest}, older {older}");
+        assert!(newest > older && newest > h / 2.0, "{file}: newest at the bottom: {newest}, older {older}, height {h}");
         // Newest at the top: the newest first from the top, older below it
         chat.update(&[("flow", Dynamic::from("down".to_string()))]);
         let drawn = chat.frame_grouped(1.0);
         let (older, newest) = (y_of(&drawn, "older"), y_of(&drawn, "newest"));
-        assert!(newest < older && newest < 30.0, "newest at the top: {newest}, older {older}");
+        assert!(newest < older && newest < 30.0, "{file}: newest at the top: {newest}, older {older}");
     }
 
     #[test]

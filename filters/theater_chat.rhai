@@ -23,7 +23,7 @@ fn defaults() {
     #{
         preset: "glass", applied_preset: "",
         width: 450, height: 700,
-        layout_mode: "inline", bubble_style: "bubble",
+        layout_mode: "inline", bubble_style: "bubble", flow: "up",
         font: "Poppins", fontsize: 16, font_weight_user: 700, font_weight_msg: 400,
         msg_color: rgba(255, 255, 255, 1.0),
         username_color_mode: "platform", user_color: rgba(255, 159, 10, 1.0),
@@ -94,6 +94,10 @@ fn properties() {
             ["Single line", "inline"], ["Two lines", "stacked"], ["Two lines, split header", "stacked-split"],
             ["Single line, aligned badges", "inline-align"], ["Two lines, aligned badges", "stacked-align"],
         ]),
+        choice("flow", "Flow", [
+            ["Newest at the bottom (older ones go up)", "up"],
+            ["Newest at the top (older ones go down)", "down"],
+        ]),
         choice("bubble_style", "Bubble", [
             ["Full bubble", "bubble"], ["Double bubble (name and message)", "double-bubble"], ["Left border accent", "left-border"],
             ["Underline separator", "bottom-line"], ["No bubble (text only)", "minimal"],
@@ -125,7 +129,7 @@ fn properties() {
         toggle("user_badges", "Badges"),
         toggle("user_images", "Avatars"),
         toggle("clean", "Remove messages the moderation flags"),
-        choice("animation", "Entrance", [["Slide up", "slide"], ["Fade in", "fade"], ["Scale up", "scale"], ["Slide in from the left", "left"]]),
+        choice("animation", "Entrance", [["Slide in", "slide"], ["Fade in", "fade"], ["Scale up", "scale"], ["Slide in from the left", "left"]]),
         int_slider("expiry", "Hide messages after (s, 0: never)", 0, 60, 5),
         int_slider("max_messages", "Messages kept", 5, 100, 1),
     ]
@@ -186,6 +190,8 @@ fn style_of(s) {
         transparent: transparent,
         double: bubble == "double-bubble",
         layout: s.layout_mode,
+        // "down": the newest message at the top, older ones below it
+        top_down: text_of(s.flow) == "down",
         body_mode: s.body_color_mode,
         bg: s.bg,
         header_mode: s.header_color_mode,
@@ -864,15 +870,17 @@ fn tick(dt) {
         }
     }
 
-    // From the bottom up, 15 px in, 8 px apart
+    // Newest first, 15 px in, 8 px apart: from the bottom up (older ones
+    // above), or with Flow "newest at the top", from the top down
     let out = [];
-    let bottom = h - 15.0;
+    let down = st.top_down;
+    let edge = if down { 15.0 } else { h - 15.0 };
     let i = this.messages.len() - 1;
-    while i >= 0 && bottom > 0.0 {
+    while i >= 0 && (if down { edge < h } else { edge > 0.0 }) {
         let laid_h = this.messages[i].laid.h;
         let laid_w = this.messages[i].laid.w;
         let leaving = this.messages[i].leaving;
-        let y = bottom - laid_h;
+        let y = if down { edge } else { edge - laid_h };
         let age = now - this.messages[i].born;
         let alpha = 1.0;
         let dx = 0.0;
@@ -887,7 +895,8 @@ fn tick(dt) {
                 "fade" => {},
                 "scale" => { scale = 0.85 + 0.15 * e; },
                 "left" => { dx = -30.0 * (1.0 - e); },
-                _ => { dy = 20.0 * (1.0 - e); },
+                // In from the side the messages come from
+                _ => { dy = (if down { -20.0 } else { 20.0 }) * (1.0 - e); },
             }
         }
         // Leaving: expired ones rise and fade, removed ones slide away
@@ -899,7 +908,7 @@ fn tick(dt) {
             if removed { dx = -30.0 * e; scale = 1.0 - 0.1 * e; } else { dy = -10.0 * e; scale = 1.0 - 0.05 * e; }
         }
         out.push(#{ group: this.messages[i].laid.cmds, x: 15.0 + dx, y: y + dy, scale: scale, origin: [laid_w / 2.0, laid_h / 2.0], alpha: alpha });
-        bottom = y - 8.0;
+        edge = if down { y + laid_h + 8.0 } else { y - 8.0 };
         i -= 1;
     }
     out.reverse();
@@ -914,9 +923,11 @@ fn tick(dt) {
         let label = if connected { "Connected to the relay" } else { "Waiting for the relay…" };
         let t = measure_text(label, "Inter", 13.0, 600);
         let pill_w = t[0] + 36.0;
-        out.push(#{ rect: [15.0, 15.0, pill_w, 28.0], fill: rgba(18, 18, 24, 0.7), radius: 14.0, border: 1.0, border_color: rgba(255, 255, 255, 0.08) });
-        out.push(#{ rect: [27.0, 25.0, 8.0, 8.0], fill: if connected { 0xFF30D158 } else { 0xFFFF9F0A }, radius: 4.0 });
-        out.push(#{ text: label, x: 41.0, y: 15.0 + ((28.0 - t[1]) / 2.0).round(), font: "Inter", size: 13.0, weight: 600, color: rgba(255, 255, 255, 0.7) });
+        // At the bottom when the newest message is at the top, so it doesn't cover it
+        let py = if down { h - 43.0 } else { 15.0 };
+        out.push(#{ rect: [15.0, py, pill_w, 28.0], fill: rgba(18, 18, 24, 0.7), radius: 14.0, border: 1.0, border_color: rgba(255, 255, 255, 0.08) });
+        out.push(#{ rect: [27.0, py + 10.0, 8.0, 8.0], fill: if connected { 0xFF30D158 } else { 0xFFFF9F0A }, radius: 4.0 });
+        out.push(#{ text: label, x: 41.0, y: py + ((28.0 - t[1]) / 2.0).round(), font: "Inter", size: 13.0, weight: 600, color: rgba(255, 255, 255, 0.7) });
     }
 
     if st.opacity < 1.0 { [#{ group: out, alpha: st.opacity }] } else { out }
