@@ -20,6 +20,11 @@
 //! (Win32 ShowWindow: the Studio's hidden window draws no frames to open a
 //! new one with).
 //!
+//! A script another plugin ships (in its data folder: Theater Puppet's
+//! `plugins\theater-puppet\data\theater-scripts`) has its menu entry in that
+//! plugin's part of Theater's menu, with its icon (`data\icon.png`): each
+//! plugin's things stay together.
+//!
 //! Windows only for now: X11 could embed the same way, Wayland can't.
 
 use std::ffi::{CString, c_void};
@@ -47,7 +52,30 @@ pub struct Dock {
     hwnd: AtomicIsize,
     /// Has its entry in Theater's menu
     in_menu: AtomicBool,
+    /// The plugin whose script it is (None: Theater Scene's own)
+    owner: Option<Owner>,
     ui: Box<dyn Fn(&egui::Context) + Send + Sync>,
+}
+
+/// The plugin a script came with: its id (its part of Theater's menu) and icon
+#[derive(Clone, Debug, PartialEq)]
+pub struct Owner {
+    id: String,
+    icon: String,
+}
+
+/// The plugin whose data folder `dir` is in (…\plugins\<id>\data\…), when
+/// it isn't Theater Scene
+fn owner_of(dir: &std::path::Path) -> Option<Owner> {
+    let parts: Vec<std::path::Component> = dir.components().collect();
+    let at = parts.iter().position(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("plugins"))?;
+    let id = parts.get(at + 1)?.as_os_str().to_string_lossy().into_owned();
+    let data = parts.get(at + 2)?.as_os_str().to_string_lossy().eq_ignore_ascii_case("data");
+    if !data || id.eq_ignore_ascii_case("theater-scene") {
+        return None;
+    }
+    let root: std::path::PathBuf = parts[..at + 3].iter().collect();
+    Some(Owner { id, icon: root.join("icon.png").to_string_lossy().into_owned() })
 }
 
 static DOCKS: Mutex<Vec<Arc<Dock>>> = Mutex::new(Vec::new());
@@ -59,6 +87,7 @@ pub struct Window {
     /// Its egui window, once found
     hwnd: AtomicIsize,
     in_menu: AtomicBool,
+    owner: Option<Owner>,
     ui: Box<dyn Fn(&egui::Context) + Send + Sync>,
 }
 
@@ -98,6 +127,7 @@ pub fn create_docks(create_dock: TrustUiCreateDockFn, show_dock: TrustUiShowDock
             title: ty.compiled().name.clone(),
             hwnd: AtomicIsize::new(0),
             in_menu: AtomicBool::new(false),
+            owner: owner_of(&ty.compiled().dir),
             ui: Box::new(move |ctx| script.draw(ctx)),
         }));
         trust_log(&format!("[Trust Core] 🪟 egui window '{}' made (hidden until its menu entry opens it)", id));
@@ -114,7 +144,7 @@ pub fn create_docks(create_dock: TrustUiCreateDockFn, show_dock: TrustUiShowDock
         // Apart from other plugins' docks (OBS keeps them all by id)
         let id = format!("theater_rhai_{}", ty.id());
         let script = crate::script_docks::DockScript::new(ty, viewport_id(&id));
-        add_dock(create_dock, show_dock, &id, &ty.compiled().name, Box::new(move |ctx| script.draw(ctx)));
+        add_dock(create_dock, show_dock, &id, &ty.compiled().name, owner_of(&ty.compiled().dir), Box::new(move |ctx| script.draw(ctx)));
     }
     if DOCKS.lock().is_empty() && WINDOWS.lock().is_empty() {
         return;
@@ -137,6 +167,7 @@ fn add_dock(
     show_dock: TrustUiShowDockFn,
     id: &str,
     title: &str,
+    owner: Option<Owner>,
     ui: Box<dyn Fn(&egui::Context) + Send + Sync>,
 ) {
     let (Ok(c_id), Ok(c_title)) = (CString::new(id), CString::new(title)) else { return };
@@ -152,6 +183,7 @@ fn add_dock(
         handle,
         hwnd: AtomicIsize::new(0),
         in_menu: AtomicBool::new(false),
+        owner,
         ui,
     }));
     trust_log(&format!("[Trust Core] 🧩 egui dock '{}' created; its window follows once the Studio's thread is up", id));
@@ -168,19 +200,57 @@ pub fn menu_ready(add_action: TrustUiAddMenuActionFn) {
 /// dock (brought back if it was closed).
 fn add_menu_entries() {
     let Some(add_action) = *MENU.lock() else { return };
+    type Callback = unsafe extern "C" fn(*mut c_void);
+    // (whose, its title, what it does, with what)
+    let mut entries: Vec<(Option<Owner>, String, Callback, usize)> = Vec::new();
     for dock in DOCKS.lock().iter() {
-        if dock.in_menu.swap(true, Ordering::SeqCst) {
-            continue;
+        if !dock.in_menu.swap(true, Ordering::SeqCst) {
+            entries.push((dock.owner.clone(), dock.title.clone(), show_dock_menu_cb, dock.handle as usize));
         }
-        let Ok(title) = CString::new(dock.title.as_str()) else { continue };
-        unsafe { add_action(title.as_ptr(), show_dock_menu_cb, dock.handle as usize as *mut c_void) };
     }
     for (i, window) in WINDOWS.lock().iter().enumerate() {
-        if window.in_menu.swap(true, Ordering::SeqCst) {
-            continue;
+        if !window.in_menu.swap(true, Ordering::SeqCst) {
+            entries.push((window.owner.clone(), format!("{}\u{2026}", window.title), open_window_menu_cb, i));
         }
-        let Ok(title) = CString::new(format!("{}\u{2026}", window.title)) else { continue };
-        unsafe { add_action(title.as_ptr(), open_window_menu_cb, i as *mut c_void) };
+    }
+    // Another plugin's: in its own part of the menu (started once)
+    type StartGroup = unsafe extern "C" fn(*const std::ffi::c_char) -> bool;
+    type AddItem = unsafe extern "C" fn(*const std::ffi::c_char, *const std::ffi::c_char, *const std::ffi::c_char, Callback, *mut c_void) -> bool;
+    static STARTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let qt = open_trust_qt_lib();
+    let (start_ptr, add_ptr) = unsafe { (frontend_sym(qt, b"trust_ui_menu_start_group\0"), frontend_sym(qt, b"trust_ui_menu_add_item\0")) };
+    for (owner, title, callback, data) in entries {
+        let Ok(c_title) = CString::new(title.as_str()) else { continue };
+        if let (Some(owner), false, false) = (&owner, start_ptr.is_null(), add_ptr.is_null()) {
+            let (start, add): (StartGroup, AddItem) = unsafe { (std::mem::transmute(start_ptr), std::mem::transmute(add_ptr)) };
+            let (Ok(id), Ok(icon)) = (CString::new(owner.id.as_str()), CString::new(owner.icon.as_str())) else { continue };
+            let mut started = STARTED.lock();
+            if !started.contains(&owner.id) {
+                if !unsafe { start(id.as_ptr()) } {
+                    continue;
+                }
+                started.push(owner.id.clone());
+            }
+            unsafe { add(id.as_ptr(), icon.as_ptr(), c_title.as_ptr(), callback, data as *mut c_void) };
+            trust_log(&format!("[Trust Core] 🧩 '{}' is in {}'s part of Theater's menu", title, owner.id));
+        } else {
+            unsafe { add_action(c_title.as_ptr(), callback, data as *mut c_void) };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn another_plugins_script_goes_in_its_part_of_the_menu() {
+        let puppet = owner_of(std::path::Path::new(r"C:\ProgramData\obs-studio/plugins\theater-puppet\data\theater-scripts")).unwrap();
+        assert_eq!(puppet.id, "theater-puppet");
+        assert_eq!(std::path::PathBuf::from(&puppet.icon), std::path::PathBuf::from(r"C:\ProgramData\obs-studio\plugins\theater-puppet\data\icon.png"));
+        // Theater Scene's own, and a folder of the user's: Scene's part
+        assert_eq!(owner_of(std::path::Path::new(r"C:\ProgramData\obs-studio\plugins\theater-scene\data\filters")), None);
+        assert_eq!(owner_of(std::path::Path::new(r"C:\Users\me\repo\Theater - 360")), None);
     }
 }
 
