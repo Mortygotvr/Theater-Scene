@@ -72,6 +72,60 @@ fn puppets() -> Vec<Value> {
     cache.as_ref().map(|(_, l)| l.clone()).unwrap_or_default()
 }
 
+/// Pictures of a Puppet's tiles (Puppet's `tile_previews`, `ask` its
+/// request without the action), as textures, asked again every 5 seconds
+fn tile_pictures(ctx: &egui::Context, ask: Value) -> Vec<(String, egui::TextureHandle)> {
+    use base64::Engine;
+    type Cache = std::collections::HashMap<String, (std::time::Instant, Vec<(String, egui::TextureHandle)>)>;
+    static CACHE: parking_lot::Mutex<Option<Cache>> = parking_lot::Mutex::new(None);
+    let mut args = ask;
+    args["action"] = json!("tile_previews");
+    args["size"] = json!(64);
+    let key = args.to_string();
+    let mut cache = CACHE.lock();
+    let cache = cache.get_or_insert_with(Default::default);
+    if let Some((t, pics)) = cache.get(&key) {
+        if t.elapsed().as_secs_f32() < 5.0 {
+            return pics.clone();
+        }
+    }
+    let previews = crate::obs_procs::call_proc_json(PROC, &key)
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("previews").and_then(|p| p.as_array()).cloned())
+        .unwrap_or_default();
+    let pics: Vec<(String, egui::TextureHandle)> = previews
+        .iter()
+        .filter_map(|p| {
+            let name = p.get("name")?.as_str()?.to_string();
+            let png = base64::prelude::BASE64_STANDARD.decode(p.get("png")?.as_str()?).ok()?;
+            let img = image::load_from_memory(&png).ok()?.to_rgba8();
+            let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+            Some((name.clone(), ctx.load_texture(format!("puppet_tile {key} {name}"), color, egui::TextureOptions::NEAREST)))
+        })
+        .collect();
+    cache.insert(key, (std::time::Instant::now(), pics.clone()));
+    pics
+}
+
+/// The pictures as buttons, the one named `current` lit; the name clicked
+fn picture_picker(ui: &mut egui::Ui, pics: &[(String, egui::TextureHandle)], current: &str) -> Option<String> {
+    let mut picked = None;
+    ui.horizontal_wrapped(|ui| {
+        for (name, tex) in pics {
+            ui.vertical(|ui| {
+                let size = tex.size_vec2();
+                let k = 56.0 / size.y.max(1.0);
+                let lit = name.eq_ignore_ascii_case(current.trim());
+                if ui.add(egui::ImageButton::new(egui::Image::new(tex).fit_to_exact_size(size * k)).selected(lit)).on_hover_text(name).clicked() {
+                    picked = Some(name.clone());
+                }
+                ui.label(egui::RichText::new(name).small());
+            });
+        }
+    });
+    picked
+}
+
 const ACTIONS: [(&str, &str); 7] = [
     ("animation", "🎬 Play an animation"),
     ("shape", "🙂 Shape key on / off / ping-pong"),
@@ -276,6 +330,14 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                     m.remove("material");
                 }
                 changed |= text_with_choices(ui, "Tile:", cmd, "name", &names("tiles"), "its name");
+                // Each tile, seen (a wildcard GLB has none to show)
+                if !glb.contains('{') && !names("tiles").is_empty() {
+                    let pics = tile_pictures(ui.ctx(), json!({ "source": source, "glb": glb }));
+                    if let Some(name) = picture_picker(ui, &pics, get_str(cmd, "name", "")) {
+                        cmd["name"] = json!(name);
+                        changed = true;
+                    }
+                }
             } else {
                 if cmd.get("material").is_none() {
                     cmd["material"] = json!("");
@@ -297,6 +359,15 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                     cmd["cell"] = json!("0");
                 }
                 changed |= text_with_choices(ui, "Cell:", cmd, "cell", &["next".to_string(), "random".to_string()], "0 = top left, across then down; next; random; {1}");
+                // Each cell, seen
+                let material = get_str(cmd, "material", "").trim().to_string();
+                if !material.is_empty() && !material.contains('{') && !glb.contains('{') {
+                    let pics = tile_pictures(ui.ctx(), json!({ "source": source, "glb": glb, "material": material, "columns": cmd["columns"], "rows": cmd["rows"] }));
+                    if let Some(cell) = picture_picker(ui, &pics, get_str(cmd, "cell", "")) {
+                        cmd["cell"] = json!(cell);
+                        changed = true;
+                    }
+                }
             }
             changed |= choice(ui, "State:", cmd, "state", &[("on", "On"), ("off", "Off (back to its own)"), ("toggle", "Toggle")]);
             // A shape key held while the tile shows (let go with it)
