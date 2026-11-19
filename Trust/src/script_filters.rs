@@ -455,6 +455,15 @@ pub enum ScriptKind {
     Source,
     /// A dock in OBS: ui draws it (script_docks)
     Dock,
+    /// A window of its own, opened from Theater's menu: ui draws it, as a dock's
+    Window,
+}
+
+impl ScriptKind {
+    /// Drawn with egui by its `fn ui(ui)` (a dock or a window)
+    pub fn has_ui(self) -> bool {
+        matches!(self, ScriptKind::Dock | ScriptKind::Window)
+    }
 }
 
 /// A filter script, compiled: what Theater reads from it once.
@@ -689,11 +698,12 @@ pub fn compile(source: &str, path: &Path) -> Result<Compiled, String> {
         None | Some("filter") => ScriptKind::Filter,
         Some("source") => ScriptKind::Source,
         Some("dock") => ScriptKind::Dock,
-        Some(other) => return Err(format!("KIND \"{}\": \"filter\", \"source\" or \"dock\"", other)),
+        Some("window") => ScriptKind::Window,
+        Some(other) => return Err(format!("KIND \"{}\": \"filter\", \"source\", \"dock\" or \"window\"", other)),
     };
     // The property helpers (button, toggle…) for filters and sources: a
     // dock's `ui.button(…)` would find them first
-    let ast = if kind == ScriptKind::Dock {
+    let ast = if kind.has_ui() {
         script
     } else {
         engine.compile(PRELUDE).map_err(|e| e.to_string())?.merge(&script)
@@ -715,7 +725,7 @@ pub fn compile(source: &str, path: &Path) -> Result<Compiled, String> {
         let defaults: Dynamic = call(&compiled, None, "defaults", ())?;
         compiled.defaults = defaults.try_cast::<Map>().ok_or("defaults() must return a map")?;
     }
-    if kind == ScriptKind::Dock {
+    if kind.has_ui() {
         if !compiled.has("ui") {
             return Err("no `fn ui(ui)`".to_string());
         }
@@ -1215,7 +1225,7 @@ fn register_file(fns: &Fns, path: &Path) -> ScriptFile {
         Err(e) => return fail(None, e),
     };
     let id = compiled.id.clone();
-    if compiled.kind == ScriptKind::Dock {
+    if compiled.kind.has_ui() {
         return register_dock(path, compiled);
     }
     let canvas_sized = compiled.size == Size::Canvas;
@@ -1293,7 +1303,7 @@ fn register_file(fns: &Fns, path: &Path) -> ScriptFile {
 /// while OBS loads), but it's listed and reloaded like the others.
 fn register_dock(path: &Path, compiled: Compiled) -> ScriptFile {
     let id = compiled.id.clone();
-    let taken = types().iter().any(|t| t.compiled().kind == ScriptKind::Dock && t.id() == id);
+    let taken = types().iter().any(|t| t.compiled().kind.has_ui() && t.id() == id);
     if taken {
         let problem = format!("the dock id \"{}\" is taken already", id);
         trust_log(&format!("[Rhai] ⚠️ {}: {}", path.display(), problem));

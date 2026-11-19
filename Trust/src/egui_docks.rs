@@ -13,6 +13,13 @@
 //! Each dock is a Rhai script (`const KIND = "dock"`, script_docks), found
 //! with the other scripts when OBS starts.
 //!
+//! A script can be a window instead (`const KIND = "window"`): the same
+//! egui, in a window of its own (title bar, taskbar button) that its entry in
+//! Theater's menu opens. It's made hidden with the docks, while the Studio's
+//! thread starts; the menu shows it and its close button hides it again
+//! (Win32 ShowWindow: the Studio's hidden window draws no frames to open a
+//! new one with).
+//!
 //! Windows only for now: X11 could embed the same way, Wayland can't.
 
 use std::ffi::{CString, c_void};
@@ -44,6 +51,18 @@ pub struct Dock {
 }
 
 static DOCKS: Mutex<Vec<Arc<Dock>>> = Mutex::new(Vec::new());
+
+/// A script's window (KIND "window")
+pub struct Window {
+    id: String,
+    title: String,
+    /// Its egui window, once found
+    hwnd: AtomicIsize,
+    in_menu: AtomicBool,
+    ui: Box<dyn Fn(&egui::Context) + Send + Sync>,
+}
+
+static WINDOWS: Mutex<Vec<Arc<Window>>> = Mutex::new(Vec::new());
 /// Theater's menu, once OBS has it (registering it clears Theater's items,
 /// so the docks' entries go in after)
 static MENU: Mutex<Option<TrustUiAddMenuActionFn>> = Mutex::new(None);
@@ -68,25 +87,36 @@ pub fn create_docks(create_dock: TrustUiCreateDockFn, show_dock: TrustUiShowDock
     if !cfg!(target_os = "windows") {
         return;
     }
-    let scripts: Vec<_> = crate::script_filters::types()
-        .into_iter()
-        .filter(|t| t.compiled().kind == crate::script_filters::ScriptKind::Dock)
-        .collect();
-    if scripts.is_empty() {
-        return;
+    let all = crate::script_filters::types();
+    let scripts: Vec<_> = all.iter().filter(|t| t.compiled().kind == crate::script_filters::ScriptKind::Dock).cloned().collect();
+    // The windows: nothing to embed, only made hidden and found
+    for ty in all.iter().filter(|t| t.compiled().kind == crate::script_filters::ScriptKind::Window) {
+        let id = format!("theater_rhai_window_{}", ty.id());
+        let script = crate::script_docks::DockScript::new(*ty, viewport_id(&id));
+        WINDOWS.lock().push(Arc::new(Window {
+            id: id.clone(),
+            title: ty.compiled().name.clone(),
+            hwnd: AtomicIsize::new(0),
+            in_menu: AtomicBool::new(false),
+            ui: Box::new(move |ctx| script.draw(ctx)),
+        }));
+        trust_log(&format!("[Trust Core] 🪟 egui window '{}' made (hidden until its menu entry opens it)", id));
     }
-    if unsafe { frontend_sym(open_trust_qt_lib(), b"trust_ui_embed_native_window\0") }.is_null() {
+    let can_embed = !unsafe { frontend_sym(open_trust_qt_lib(), b"trust_ui_embed_native_window\0") }.is_null();
+    if !can_embed && !scripts.is_empty() {
         trust_log("[Trust Core] ⚠️ This trust_qt can't hold egui docks (no trust_ui_embed_native_window)");
+    }
+    if (scripts.is_empty() || !can_embed) && WINDOWS.lock().is_empty() {
         return;
     }
 
-    for ty in scripts {
+    for ty in scripts.into_iter().filter(|_| can_embed) {
         // Apart from other plugins' docks (OBS keeps them all by id)
         let id = format!("theater_rhai_{}", ty.id());
         let script = crate::script_docks::DockScript::new(ty, viewport_id(&id));
         add_dock(create_dock, show_dock, &id, &ty.compiled().name, Box::new(move |ctx| script.draw(ctx)));
     }
-    if DOCKS.lock().is_empty() {
+    if DOCKS.lock().is_empty() && WINDOWS.lock().is_empty() {
         return;
     }
     add_menu_entries();
@@ -145,6 +175,54 @@ fn add_menu_entries() {
         let Ok(title) = CString::new(dock.title.as_str()) else { continue };
         unsafe { add_action(title.as_ptr(), show_dock_menu_cb, dock.handle as usize as *mut c_void) };
     }
+    for (i, window) in WINDOWS.lock().iter().enumerate() {
+        if window.in_menu.swap(true, Ordering::SeqCst) {
+            continue;
+        }
+        let Ok(title) = CString::new(format!("{}\u{2026}", window.title)) else { continue };
+        unsafe { add_action(title.as_ptr(), open_window_menu_cb, i as *mut c_void) };
+    }
+}
+
+/// A window's entry in Theater's menu: shows it, in front
+unsafe extern "C" fn open_window_menu_cb(index: *mut c_void) {
+    let Some(window) = WINDOWS.lock().get(index as usize).cloned() else { return };
+    let hwnd = window.hwnd.load(Ordering::SeqCst);
+    if hwnd == 0 {
+        trust_log(&format!("[Trust Core] ⚠️ egui window '{}' isn't there yet", window.id));
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        unsafe extern "system" {
+            fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+            fn SetForegroundWindow(hwnd: isize) -> i32;
+        }
+        const SW_SHOW: i32 = 5;
+        unsafe {
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+        }
+    }
+    if let Some(ctx) = EGUI.get() {
+        ctx.request_repaint_of(viewport_id(&window.id));
+    }
+}
+
+/// A window's close button: hidden, kept for the next time
+fn hide_window(ctx: &egui::Context, window: &Window) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    #[cfg(target_os = "windows")]
+    {
+        unsafe extern "system" {
+            fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        }
+        const SW_HIDE: i32 = 0;
+        let hwnd = window.hwnd.load(Ordering::SeqCst);
+        if hwnd != 0 {
+            unsafe { ShowWindow(hwnd, SW_HIDE) };
+        }
+    }
 }
 
 unsafe extern "C" fn show_dock_menu_cb(handle: *mut c_void) {
@@ -171,6 +249,21 @@ pub fn show(ctx: &egui::Context) {
         ctx.show_viewport_deferred(viewport_id(&dock.id), builder, move |ctx, _class| {
             take_keyboard_on_click(ctx, &dock);
             (dock.ui)(ctx)
+        });
+    }
+    let windows: Vec<Arc<Window>> = WINDOWS.lock().clone();
+    for window in windows {
+        // A window of its own, hidden until its menu entry shows it
+        let builder = egui::ViewportBuilder::default()
+            .with_title(window.title.clone())
+            .with_visible(false)
+            .with_inner_size([620.0, 720.0])
+            .with_min_inner_size([420.0, 300.0]);
+        ctx.show_viewport_deferred(viewport_id(&window.id), builder, move |ctx, _class| {
+            if ctx.input(|i| i.viewport().close_requested()) {
+                hide_window(ctx, &window);
+            }
+            (window.ui)(ctx)
         });
     }
 }
@@ -211,9 +304,19 @@ fn find_windows() {
         let queue_task: ObsQueueTaskFn = unsafe { std::mem::transmute(queue_task_ptr) };
         let started = std::time::Instant::now();
         loop {
+            // The windows: found by their title (they stay where they are)
+            for window in WINDOWS.lock().iter().filter(|w| w.hwnd.load(Ordering::SeqCst) == 0) {
+                let title: Vec<u16> = window.title.encode_utf16().chain(std::iter::once(0)).collect();
+                let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+                if hwnd != 0 {
+                    window.hwnd.store(hwnd, Ordering::SeqCst);
+                    trust_log(&format!("[Trust Core] 🪟 egui window '{}' found", window.id));
+                }
+            }
+            let windows_waiting = WINDOWS.lock().iter().any(|w| w.hwnd.load(Ordering::SeqCst) == 0);
             let waiting: Vec<Arc<Dock>> =
                 DOCKS.lock().iter().filter(|d| d.hwnd.load(Ordering::SeqCst) == 0).cloned().collect();
-            if waiting.is_empty() || CLOSING.load(Ordering::SeqCst) {
+            if (waiting.is_empty() && !windows_waiting) || CLOSING.load(Ordering::SeqCst) {
                 return;
             }
             if started.elapsed() > std::time::Duration::from_secs(60) {
