@@ -3370,6 +3370,37 @@ mod tests {
     }
 
     #[test]
+    fn rosia_chat_flows_either_way() {
+        // (Rosia Chat is a filter of the user's own: skipped when it isn't there)
+        let Some(mut chat) = Chat::load("Rosia_chat.rhai") else { return };
+        // Each message's place: the top-level group drawing its text
+        let y_of = |drawn: &[crate::script_draw::Cmd], words: &str| -> f32 {
+            drawn
+                .iter()
+                .find_map(|c| match c {
+                    crate::script_draw::Cmd::Group { y, children, .. } => {
+                        let mut inside = Vec::new();
+                        flatten(children, &mut inside);
+                        texts(&inside).iter().any(|t| t.contains(words)).then_some(*y)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{words} drawn"))
+        };
+        chat.event(r#"{"type":"chat","source":"Twitch","username":"Anna","message":"older"}"#);
+        chat.event(r#"{"type":"chat","source":"Twitch","username":"Ben","message":"newest"}"#);
+        // As before: the newest at the bottom, older above it
+        let drawn = chat.frame_grouped(1.0);
+        let (older, newest) = (y_of(&drawn, "older"), y_of(&drawn, "newest"));
+        assert!(newest > older && newest > 500.0, "newest at the bottom: {newest}, older {older}");
+        // Newest at the top: the newest first from the top, older below it
+        chat.update(&[("flow", Dynamic::from("down".to_string()))]);
+        let drawn = chat.frame_grouped(1.0);
+        let (older, newest) = (y_of(&drawn, "older"), y_of(&drawn, "newest"));
+        assert!(newest < older && newest < 30.0, "newest at the top: {newest}, older {older}");
+    }
+
+    #[test]
     fn the_chat_shares_its_look_for_the_alerts() {
         let Some(_chat) = Chat::new() else { return };
         // (Other chats in other tests share theirs too: only its shape is checked)
