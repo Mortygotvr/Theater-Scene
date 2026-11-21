@@ -5,6 +5,12 @@
 //! tile (by name, or next / random in a set; and a shape key with it). Each but the shape-key animation takes a
 //! timer: then Puppet puts back what it changed.
 //!
+//! A GLB prefab ("prefab"): Puppet spawns a GLB that plays one of its
+//! animations once (baked in Blender, no physics) and goes. Its contact
+//! frames (Blender markers named "contact", which Theater Rig exports) run
+//! the redeem's contact section, as a throwable's impact does: its Impact
+//! Audio, and its Screen Shake and Impact Reaction set to On Contact.
+//!
 //! The redeem keeps the command as its `puppet` setting (the procedure's own
 //! JSON); its text settings take the redeem's wildcards ({1}, {2}…) when it
 //! fires. The Studio's form fills its lists from what the Puppets have.
@@ -48,6 +54,10 @@ pub fn fire(val: &Value, wildcards: &[String]) -> bool {
                 false
             } else {
                 crate::obs_source::trust_log(&format!("[Puppet redeem] 🎭 {}", args));
+                // A GLB prefab: its contact section, timed by its contact frames
+                if is_prefab(Some(&args)) {
+                    prefab_effects(val, &out);
+                }
                 true
             }
         }
@@ -128,7 +138,7 @@ fn picture_picker(ui: &mut egui::Ui, pics: &[(String, egui::TextureHandle)], cur
     picked
 }
 
-const ACTIONS: [(&str, &str); 7] = [
+const ACTIONS: [(&str, &str); 8] = [
     ("animation", "🎬 Play an animation"),
     ("shape", "🙂 Shape key on / off / ping-pong"),
     ("shape_anim", "📈 Animate a shape key"),
@@ -136,7 +146,85 @@ const ACTIONS: [(&str, &str); 7] = [
     ("group", "🔀 Show a GLB of a group"),
     ("tile", "🧩 Tile texture"),
     ("color", "🎨 Set a colour slot"),
+    ("prefab", "📦 Spawn a GLB (prefab: plays once, then goes)"),
 ];
+
+/// Whether a redeem's Puppet command spawns a GLB prefab (its contact section applies)
+pub fn is_prefab(puppet: Option<&Value>) -> bool {
+    puppet.and_then(|p| p.get("action")).and_then(|a| a.as_str()) == Some("prefab")
+}
+
+/// A GLB prefab's contact section (its redeem's settings `val`, Puppet's
+/// `plan`): the Screen Shake and Impact Reaction set On Start now; at each
+/// contact frame (seconds from now), the Impact Audio, and the shake and the
+/// reaction set On Contact. On the avatar the prefab spawned with.
+fn prefab_effects(val: &Value, plan: &Value) {
+    use crate::physics::{ImpactReactionConfig, ImpactReactionKind, ShakeTiming};
+    let text = |keys: &[&str]| keys.iter().find_map(|k| val.get(*k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())).map(str::to_string);
+    let sound = text(&["collisionSound", "collision_sound", "collisionSoundPath", "collision_sound_path"]);
+    let map: std::collections::HashMap<String, Value> = val.as_object().map(|m| m.clone().into_iter().collect()).unwrap_or_default();
+    let shake = crate::physics::parse_shake_config(&map);
+    let reaction = ImpactReactionConfig::parse(val.get("impactReactions").or_else(|| val.get("impact_reactions")));
+    let target = plan.get("source").and_then(|s| s.as_str()).unwrap_or("").to_string();
+    let (w, h) = crate::obs_source::get_obs_canvas_resolution();
+    let (cx, cy) = (w.max(1) as f32 * 0.5, h.max(1) as f32 * 0.5);
+    let shakes = |when: ShakeTiming| shake.enabled && shake.timing == when;
+    let reacts = |when: ShakeTiming| reaction.kind != ImpactReactionKind::None && reaction.timing == when;
+    if shakes(ShakeTiming::Start) {
+        crate::state::get_state().trigger_screen_shake(shake.duration, shake.intensity);
+    }
+    if reacts(ShakeTiming::Start) {
+        crate::physics::fire_impact_reaction(&reaction, &target, cx, cy);
+    }
+    let contacts: Vec<f64> = plan.get("contacts").and_then(|c| c.as_array()).map(|a| a.iter().filter_map(|t| t.as_f64()).filter(|t| t.is_finite() && *t >= 0.0).collect()).unwrap_or_default();
+    let (shake_on, react_on) = (shakes(ShakeTiming::Impact), reacts(ShakeTiming::Impact));
+    if contacts.is_empty() || (sound.is_none() && !shake_on && !react_on) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("puppet-prefab-contacts".into()).spawn(move || {
+        let start = std::time::Instant::now();
+        for t in contacts {
+            let at = start + std::time::Duration::from_secs_f64(t);
+            if let Some(wait) = at.checked_duration_since(std::time::Instant::now()) {
+                std::thread::sleep(wait);
+            }
+            if let Some(s) = &sound {
+                let _ = crate::play_sound_str(s);
+            }
+            if shake_on {
+                crate::state::get_state().trigger_screen_shake(shake.duration, shake.intensity);
+            }
+            if react_on {
+                crate::physics::fire_impact_reaction(&reaction, &target, cx, cy);
+            }
+            crate::obs_source::trust_log(&format!("[Puppet redeem] 💥 Prefab contact at {t:.2} s"));
+        }
+    });
+}
+
+/// A GLB's animations (Puppet's `prefab_info`: name, seconds, contacts),
+/// asked again every 2 seconds while the form shows it
+fn prefab_clips(glb: &str) -> Option<Vec<(String, f64, usize)>> {
+    type Cache = std::collections::HashMap<String, (std::time::Instant, Option<Vec<(String, f64, usize)>>)>;
+    static CACHE: std::sync::LazyLock<parking_lot::Mutex<Cache>> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(Cache::new()));
+    let mut cache = CACHE.lock();
+    if let Some((at, clips)) = cache.get(glb) {
+        if at.elapsed().as_secs_f32() < 2.0 {
+            return clips.clone();
+        }
+    }
+    let clips = crate::obs_procs::call_proc_json(PROC, &json!({ "action": "prefab_info", "glb": glb }).to_string())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .filter(|v| v.get("ok").and_then(|o| o.as_bool()) == Some(true))
+        .and_then(|v| v.get("clips").and_then(|c| c.as_array()).cloned())
+        .map(|a| {
+            a.iter()
+                .map(|c| (c.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(), c.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0), c.get("contacts").and_then(|k| k.as_array()).map_or(0, |k| k.len())))
+                .collect()
+        });
+    cache.insert(glb.to_string(), (std::time::Instant::now(), clips.clone()));
+    clips
+}
 
 fn get_str<'a>(cmd: &'a Value, key: &str, default: &'a str) -> &'a str {
     cmd.get(key).and_then(|v| v.as_str()).unwrap_or(default)
@@ -428,6 +516,57 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
             });
             cmd["color"] = json!(text);
         }
+        "prefab" => {
+            ui.horizontal(|ui| {
+                ui.label("GLB file:");
+                let mut path = get_str(cmd, "glb", "").to_string();
+                if ui.add(egui::TextEdit::singleline(&mut path).hint_text("C:\\path\\to\\prefab.glb").desired_width(260.0)).changed() {
+                    cmd["glb"] = json!(path);
+                    changed = true;
+                }
+                if ui.button("📂").on_hover_text("Pick the GLB").clicked() {
+                    if let Some(p) = crate::studio_app::pick_file_dialog("GLB prefab", "glTF (*.glb, *.gltf) | *.glb *.gltf") {
+                        cmd["glb"] = json!(p.to_string_lossy());
+                        changed = true;
+                    }
+                }
+            });
+            let glb = get_str(cmd, "glb", "").trim().to_string();
+            let clips = if glb.is_empty() || glb.contains('{') { None } else { prefab_clips(&glb) };
+            let mut names: Vec<String> = clips.iter().flatten().map(|(n, _, _)| n.clone()).collect();
+            names.push("random".into());
+            changed |= text_with_choices(ui, "Animation:", cmd, "clip", &names, "empty: its first; random; or its name");
+            let wanted = get_str(cmd, "clip", "").trim().to_string();
+            match &clips {
+                None if !glb.is_empty() && !glb.contains('{') => {
+                    ui.label(egui::RichText::new("Puppet can't read this GLB (is Theater Puppet running, and the path right?).").small().color(egui::Color32::from_rgb(234, 179, 8)));
+                }
+                Some(c) if c.is_empty() => {
+                    ui.label(egui::RichText::new("This GLB has no animation: it shows for the time below, then goes.").small().color(egui::Color32::from_rgb(148, 163, 184)));
+                }
+                Some(c) => {
+                    let shown = if wanted.is_empty() { c.first() } else { c.iter().find(|(n, _, _)| *n == wanted) };
+                    let line = match shown {
+                        Some((n, d, k)) if *k > 0 => format!("{n}: {d:.2} s, {k} contact frame(s): the contact section (below) runs at each."),
+                        Some((n, d, _)) => format!("{n}: {d:.2} s, no contact frame (in Blender: timeline markers named \"contact\", exported with Theater Rig enabled)."),
+                        None if wanted == "random" => format!("One of its {} animations, picked each time.", c.len()),
+                        None => "No animation of that name in this GLB.".to_string(),
+                    };
+                    ui.label(egui::RichText::new(line).small().color(egui::Color32::from_rgb(148, 163, 184)));
+                }
+                None => {}
+            }
+            ui.label(egui::RichText::new("Where, from the avatar's feet (metres): its right as seen, up, toward the camera").small());
+            changed |= slider(ui, "Right (-) / left (+)", cmd, "x", -3.0..=3.0, 0.0, " m");
+            changed |= slider(ui, "Down (-) / up (+)", cmd, "y", -1.0..=3.0, 0.0, " m");
+            changed |= slider(ui, "Back (-) / forward (+)", cmd, "z", -3.0..=3.0, 0.0, " m");
+            changed |= slider(ui, "Size", cmd, "scale", 0.05..=10.0, 1.0, "×");
+            changed |= slider(ui, "Turn", cmd, "turn", -180.0..=180.0, 0.0, "°");
+            if clips.as_ref().is_some_and(|c| c.is_empty()) {
+                changed |= slider(ui, "Shows for (no animation)", cmd, "hold", 0.5..=60.0, 3.0, " s");
+            }
+            ui.label(egui::RichText::new("Contact section: the Impact Audio, and the Screen Shake and Impact Reaction set to On Contact (Audio & Screen Shake, Impact Reactions below).").small().italics().color(egui::Color32::from_rgb(148, 163, 184)));
+        }
         _ => {}
     }
     // A GLB dissolving in or out, a tile crossfading
@@ -435,8 +574,8 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
         let label = if action == "tile" { "Crossfade" } else { "Fade (GLB in / out)" };
         changed |= slider(ui, label, cmd, "fade", 0.0..=5.0, 0.0, " s");
     }
-    // Back as it was after that long (a shape-key animation ends by itself)
-    if action != "shape_anim" {
+    // Back as it was after that long (a shape-key animation and a prefab end by themselves)
+    if action != "shape_anim" && action != "prefab" {
         changed |= slider(ui, "Timer (then back as it was; 0 = it stays)", cmd, "timer", 0.0..=600.0, 0.0, " s");
         ui.label(egui::RichText::new("A colour, a GLB or group's Show, a tile and its shape key, a shape key, an animation: undone when the timer runs out.").small().color(egui::Color32::from_rgb(148, 163, 184)));
     }

@@ -1379,8 +1379,9 @@ fn parse_triggers(input: &str) -> Option<Vec<String>> {
 pub fn save_redeem_to_disk(item: &mut RedeemItem) -> Result<(), String> {
     item.config.triggers = parse_triggers(&item.triggers_input);
 
-    // Only throwables (image) may have impact sound
-    if item.config.redeem_type != "image" && item.config.redeem_type != "throwable" {
+    // Only throwables (image) may have impact sound, and GLB prefabs (their contact frames)
+    let is_prefab = item.config.redeem_type == "puppet" && crate::puppet_redeem::is_prefab(item.config.puppet.as_ref());
+    if item.config.redeem_type != "image" && item.config.redeem_type != "throwable" && !is_prefab {
         item.config.collision_sound = None;
         item.config.collision_sound_path = None;
     }
@@ -6763,9 +6764,11 @@ impl StudioApp {
                                         });
 
                                         let is_throwable = item.config.redeem_type == "image" || item.config.redeem_type == "throwable";
-                                        if is_throwable {
+                                        // A GLB prefab's contact frames are its contacts
+                                        let is_prefab = item.config.redeem_type == "puppet" && crate::puppet_redeem::is_prefab(item.config.puppet.as_ref());
+                                        if is_throwable || is_prefab {
                                             ui.horizontal(|ui| {
-                                                ui.label("💥 Impact Audio:");
+                                                ui.label(if is_prefab { "💥 Contact Audio:" } else { "💥 Impact Audio:" });
                                                 let mut path_str = item.config.collision_sound_path.clone().unwrap_or_default();
                                                 if ui.add(
                                                     egui::TextEdit::singleline(&mut path_str)
@@ -6815,7 +6818,7 @@ impl StudioApp {
                                             // "contact" moment too — unlike campfire fire, water, or lightning.
                                             let is_flamethrower = item.config.redeem_type == "webgl-fire"
                                                 && item.config.stream_mode.as_deref() == Some("grid");
-                                            let supports_impact = is_throwable || is_flamethrower;
+                                            let supports_impact = is_throwable || is_flamethrower || is_prefab;
                                             let mut timing = item.config.get_shake_timing();
                                             if !supports_impact && timing == "impact" {
                                                 timing = "start".to_string();
@@ -6830,6 +6833,8 @@ impl StudioApp {
                                                         if supports_impact {
                                                             let label = if is_flamethrower {
                                                                 "On Contact (stream reaches target)"
+                                                            } else if is_prefab {
+                                                                "On Contact (each of the GLB's contact frames)"
                                                             } else {
                                                                 "On Contact (throwable hits target)"
                                                             };
@@ -6931,7 +6936,9 @@ impl StudioApp {
                                             // "contact" moment too — unlike campfire fire, water, or lightning.
                                             let is_flamethrower = item.config.redeem_type == "webgl-fire"
                                                 && item.config.stream_mode.as_deref() == Some("grid");
-                                            let supports_impact = is_throwable || is_flamethrower;
+                                            // A GLB prefab: its contact frames
+                                            let is_prefab = item.config.redeem_type == "puppet" && crate::puppet_redeem::is_prefab(item.config.puppet.as_ref());
+                                            let supports_impact = is_throwable || is_flamethrower || is_prefab;
                                             let mut timing = item.config.get_reaction_timing();
                                             if !supports_impact && timing == "impact" {
                                                 timing = "start".to_string();
@@ -6946,6 +6953,8 @@ impl StudioApp {
                                                         if supports_impact {
                                                             let label = if is_flamethrower {
                                                                 "On Contact (stream reaches target)"
+                                                            } else if is_prefab {
+                                                                "On Contact (each of the GLB's contact frames)"
                                                             } else {
                                                                 "On Contact (throwable hits target)"
                                                             };
@@ -9175,6 +9184,28 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
         assert!(throwable_item.config.collision_sound.is_some());
         assert!(throwable_item.config.collision_sound_path.is_some());
         let _ = std::fs::remove_file(&throwable_item.path);
+
+        // 7. A GLB prefab (a Puppet redeem) keeps its contact sound; another Puppet redeem doesn't
+        for (action, keeps) in [("prefab", true), ("animation", false)] {
+            let mut item = RedeemItem {
+                filename: format!("puppet_{action}_test.json"),
+                path: temp_dir.join(format!("puppet_{action}_test.json")),
+                config: RedeemConfig {
+                    name: "Puppet Test".to_string(),
+                    version: "1.0".to_string(),
+                    redeem_type: "puppet".to_string(),
+                    puppet: Some(serde_json::json!({ "action": action, "glb": "pie.glb" })),
+                    collision_sound_path: Some(snd_path.clone()),
+                    collision_sound: Some("dummy_b64".to_string()),
+                    ..RedeemConfig::default()
+                },
+                is_dirty: true,
+                triggers_input: String::new(),
+            };
+            assert!(save_redeem_to_disk(&mut item).is_ok());
+            assert_eq!(item.config.collision_sound.is_some(), keeps, "{action}");
+            let _ = std::fs::remove_file(&item.path);
+        }
         let _ = std::fs::remove_file(dummy_sound_file);
     }
 
