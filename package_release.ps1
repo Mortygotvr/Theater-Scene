@@ -1,9 +1,9 @@
-# Builds the release zip, dist\theater-scene-<version>-windows-x64.zip:
+﻿# Builds the release zip, dist\theater-scene-<version>-windows-x64.zip:
 #   theater-scene\bin\64bit   the plugin (theater-scene.dll) and its Qt shim (trust_qt.dll)
 #   theater-scene\data        assets, filters, scripts (only the files git tracks)
 # People extract it into C:\ProgramData\obs-studio\plugins.
 # Build first: cd Trust; cargo build --release; .\build_trust_qt.ps1
-param([string]$Version = "0.2.2")
+param([string]$Version = "0.2.3")
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
