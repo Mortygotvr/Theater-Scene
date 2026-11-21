@@ -2133,13 +2133,13 @@ pub fn is_chat_event(event: &crate::types::StreamEvent) -> bool {
 /// Fires the poses (Scene Coordinate Sets) and redeems whose trigger pattern
 /// matches a Theater Reader event.
 ///
-/// THERE ARE NO CHAT TRIGGERS — by design, and don't add any. Triggers are
-/// Theater Reader *events* (channel point redeems, subs, bits, follows, raids,
-/// Super Chats…), matched against the event's trigger string, e.g.
-/// "Twitch Mortygotvr redeem Throw Tomato". Chat and whisper messages never
-/// fire anything (they only feed the chat overlay), and an event's message text
-/// (a redeem's typed input, a cheer message) is never matched either:
-/// otherwise any viewer could fire a pose or redeem by typing its pattern.
+/// Triggers are Theater Reader *events* (channel point redeems, subs, bits,
+/// follows, raids, Super Chats…), matched against the event's trigger string,
+/// e.g. "Twitch Mortygotvr redeem Throw Tomato". Chat and whisper messages
+/// never reach this (an event's message text, a redeem's typed input or a
+/// cheer message, is never matched either): otherwise any viewer could fire
+/// a pose or redeem by typing its pattern. Chat fires chat commands only, by
+/// their exact text, in process_chat_command.
 pub fn process_trigger_event(event: &crate::types::StreamEvent) {
     if is_chat_event(event) {
         return;
@@ -2148,7 +2148,44 @@ pub fn process_trigger_event(event: &crate::types::StreamEvent) {
     if ev_trig.is_empty() {
         return;
     }
+    fire_matching(&|pat: &str| match_and_extract_wildcards(pat, ev_trig));
+}
 
+/// How long a chat command waits before it fires again (anyone in chat can
+/// fire one: it keeps them from spamming it)
+pub const CHAT_COMMAND_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// When each chat command (its pattern) last fired
+static CHAT_COMMANDS_FIRED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// A chat message (`chat`: its trigger, "Twitch mortygotvr chat"): the poses
+/// and redeems with a chat command it is exactly ("Twitch * chat !hydrate";
+/// theater_shared::triggers::chat_fires), each once per cooldown. Nothing
+/// else: a message never fires an event's trigger.
+pub fn process_chat_command(chat: &str, message: &str, user: &str) {
+    if theater_shared::triggers::chat_text(message).is_empty() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let fires = |pat: &str| -> Option<Vec<String>> {
+        if !theater_shared::triggers::chat_fires(pat, chat, message) {
+            return None;
+        }
+        let key = pat.trim().to_lowercase();
+        let mut fired = CHAT_COMMANDS_FIRED.lock();
+        if fired.get(&key).is_some_and(|at| now.duration_since(*at) < CHAT_COMMAND_COOLDOWN) {
+            println!("[Trust Trigger Engine] ⏳ Chat command '{}' by {} is cooling down", pat, user);
+            return None;
+        }
+        fired.insert(key, now);
+        Some(Vec::new())
+    };
+    fire_matching(&fires);
+}
+
+/// Fires the pose and the redeems whose pattern `matches` (its wildcards' values)
+fn fire_matching(matches: &dyn Fn(&str) -> Option<Vec<String>>) {
     let state = get_state();
 
     // 1. Scene Coordinate Sets (Camera / Layout transitions)
@@ -2168,7 +2205,7 @@ pub fn process_trigger_event(event: &crate::types::StreamEvent) {
         if t.is_empty() {
             return false;
         }
-        match_trigger_wildcard(t, ev_trig)
+        matches(t).is_some()
     }).cloned();
     drop(sets_lock);
 
@@ -2194,7 +2231,7 @@ pub fn process_trigger_event(event: &crate::types::StreamEvent) {
     for r_item in &redeems_snapshot {
         if let Some(trigs) = &r_item.config.triggers {
             for pat in trigs {
-                if let Some(wcards) = match_and_extract_wildcards(pat, ev_trig) {
+                if let Some(wcards) = matches(pat) {
                     println!(
                         "[Trust Trigger Engine] 🎯 Matched redeem '{}' (pattern '{}') with wildcards: {:?}",
                         r_item.config.name, pat, wcards

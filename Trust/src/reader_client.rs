@@ -101,14 +101,24 @@ impl ReaderClient {
 
 /// A relay message, for Theater's triggers: alerts fire what matches them,
 /// tests (test_trigger, test_object) what they name. Chat is the Rhai chat
-/// source's, on its own connection (script_feed): here it only reaches the
-/// trigger check, where chat never fires anything.
+/// source's, on its own connection (script_feed): here a chat message only
+/// fires chat commands (studio_app::process_chat_command), through the copy
+/// Theater Reader sends of each one for moderation (it has the channel).
 pub fn on_relay_message(text: &str) {
     if let Ok(v) = serde_json::from_str::<Value>(text) {
         // An alert's channel and redeem title, for the trigger lists
         theater_shared::seen::note(&v);
         let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        if msg_type == "moderation" || msg_type == "sys_diag" || msg_type == "sub_cache" {
+        if msg_type == "moderation" {
+            // A chat message ("Twitch mortygotvr chat"): its chat commands
+            let p = v.get("payload");
+            let field = |k: &str| p.and_then(|p| p.get(k)).and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let trigger = field("trigger");
+            if trigger.split_whitespace().nth(2).is_some_and(|w| w.eq_ignore_ascii_case("chat")) {
+                crate::studio_app::process_chat_command(&trigger, &field("message"), &field("username"));
+            }
+            return;
+        } else if msg_type == "sys_diag" || msg_type == "sub_cache" {
             return;
         } else if msg_type == "test_object" {
             if let Some(payload) = v.get("payload") {
