@@ -519,10 +519,10 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
         "color" => {
             let slots = list("colour_slots");
             // One slot, each slot its own colour, or the rainbow
-            let mut mode = if cmd.get("rainbow").is_some() { "rainbow" } else if cmd.get("gradient").is_some() { "gradient" } else if cmd.get("colors").is_some_and(|c| c.is_object()) { "each" } else { "one" }.to_string();
-            ui.horizontal(|ui| {
+            let mut mode = if cmd.get("reset").is_some() { "reset" } else if cmd.get("rainbow").is_some() { "rainbow" } else if cmd.get("gradient").is_some() { "gradient" } else if cmd.get("colors").is_some_and(|c| c.is_object()) { "each" } else { "one" }.to_string();
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Set:");
-                for (value, label) in [("one", "One slot"), ("each", "Each slot its own"), ("gradient", "🌗 Gradient"), ("rainbow", "🌈 Rainbow")] {
+                for (value, label) in [("one", "One slot"), ("each", "Each slot its own"), ("gradient", "🌗 Gradient"), ("rainbow", "🌈 Rainbow"), ("reset", "⏹ Back to normal")] {
                     if ui.selectable_label(mode == value, label).clicked() && mode != value {
                         mode = value.to_string();
                         changed = true;
@@ -550,7 +550,7 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
             let hint = "#rrggbb, red, random, {1}";
             let keep = |cmd: &mut Value, keys: &[&str]| {
                 if let Some(map) = cmd.as_object_mut() {
-                    for k in ["slot", "color", "colors", "rainbow", "gradient"] {
+                    for k in ["slot", "color", "colors", "rainbow", "gradient", "reset"] {
                         if !keys.contains(&k) {
                             map.remove(k);
                         }
@@ -609,6 +609,11 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                     }
                     cmd["colors"] = Value::Object(colors);
                     ui.label(egui::RichText::new("All at once, each its own: \"random\" on several slots gives each a different colour; an empty one stays as it is; a slot the avatar doesn't have is skipped.").small().color(egui::Color32::from_rgb(148, 163, 184)));
+                }
+                "reset" => {
+                    keep(cmd, &["reset"]);
+                    cmd["reset"] = json!(true);
+                    ui.label(egui::RichText::new("The rainbow and the gradient off, every colour slot its own colour again (over the Transition), and the colour timers still running dropped. Test it here when a colour stays on.").small().color(egui::Color32::from_rgb(148, 163, 184)));
                 }
                 "gradient" => {
                     keep(cmd, &["gradient"]);
@@ -766,8 +771,11 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
         let label = if action == "tile" { "Crossfade" } else { "Fade (GLB in / out)" };
         changed |= slider(ui, label, cmd, "fade", 0.0..=5.0, 0.0, " s");
     }
-    // Back as it was after that long (a shape-key animation and a prefab end by themselves)
-    if action != "shape_anim" && action != "prefab" {
+    // Back as it was after that long (a shape-key animation and a prefab end by themselves; Back to normal is one already)
+    if action != "shape_anim" && action != "prefab" && !(action == "color" && cmd.get("reset").is_some()) {
+        if action == "color" && (cmd.get("rainbow").is_some() || cmd.get("gradient").is_some()) && get_f(cmd, "timer", 0.0) <= 0.0 {
+            ui.colored_label(egui::Color32::from_rgb(234, 179, 8), "Timer 0: it stays on until a ⏹ Back to normal (and a second fire with 0 cancels the first one's timer).");
+        }
         changed |= slider(ui, "Timer (then back as it was; 0 = it stays)", cmd, "timer", 0.0..=600.0, 0.0, " s");
         ui.label(egui::RichText::new("A colour, a GLB or group's Show, a tile and its shape key, a shape key, an animation: undone when the timer runs out.").small().color(egui::Color32::from_rgb(148, 163, 184)));
     }
