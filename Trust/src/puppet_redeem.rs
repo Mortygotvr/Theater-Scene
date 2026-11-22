@@ -691,6 +691,15 @@ mod tests {
     }
 
     #[test]
+    fn a_minimal_colour_redeem_file_loads() {
+        // As written for the 🎨 Colour redeem: name, type and the command only
+        let text = r#"{ "name": "🎨 Colour", "version": "1.0", "type": "puppet", "puppet": { "action": "color", "colors": { "3": "random" }, "timer": 120 } }"#;
+        let c: crate::studio_app::RedeemConfig = serde_json::from_str(text).unwrap();
+        assert_eq!((c.name.as_str(), c.redeem_type.as_str()), ("🎨 Colour", "puppet"));
+        assert_eq!(c.puppet.unwrap()["colors"]["3"], "random");
+    }
+
+    #[test]
     fn every_slots_colour_takes_the_wildcards() {
         let cmd = json!({ "action": "color", "colors": { "0": "#{1}", "3": "#00ff88", "5": "reset" } });
         let out = command(&cmd, &["ff0000".to_string()]);
