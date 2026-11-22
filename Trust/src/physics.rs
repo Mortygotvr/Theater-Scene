@@ -175,6 +175,11 @@ pub struct ImpactReactionConfig {
     /// User-configured overrides for a `Custom` script's own discovered
     /// uniforms (e.g. `squish_amount`) — unused for the built-in kinds.
     pub custom_params: Vec<(String, f32)>,
+    /// A Theater Puppet animation played once with it (`impactReactions.
+    /// puppet_animation`: {enabled, clip, timing}): on the target if it's a
+    /// Puppet, else on every Puppet. Not one of the exclusive styles above:
+    /// it goes with any of them (a bounce and the avatar's "Knocked Out").
+    pub animation: Option<(String, ShakeTiming)>,
 }
 
 impl ImpactReactionConfig {
@@ -184,6 +189,27 @@ impl ImpactReactionConfig {
     ///    jolt: {enabled, intensity, duration_ms} }`.
     /// Only the first enabled entry (bounce, then pixel_drip, then jolt) applies.
     pub fn parse(v: Option<&serde_json::Value>) -> Self {
+        let mut c = Self::parse_style(v);
+        c.animation = v.and_then(|v| v.get("puppet_animation")).filter(|a| a.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false)).and_then(|a| {
+            let clip = a.get("clip").and_then(|c| c.as_str()).map(str::trim).filter(|c| !c.is_empty())?.to_string();
+            let timing = a.get("timing").and_then(|t| serde_json::from_value::<ShakeTiming>(t.clone()).ok()).unwrap_or_default();
+            Some((clip, timing))
+        });
+        c
+    }
+
+    /// What fires at `when`: the style if its timing is that, the Puppet
+    /// animation if its own is; None when nothing does
+    pub fn at(&self, when: ShakeTiming) -> Option<Self> {
+        let mut c = self.clone();
+        if c.timing != when {
+            c.kind = ImpactReactionKind::None;
+        }
+        c.animation = c.animation.filter(|(_, t)| *t == when);
+        (c.kind != ImpactReactionKind::None || c.animation.is_some()).then_some(c)
+    }
+
+    fn parse_style(v: Option<&serde_json::Value>) -> Self {
         let Some(v) = v else { return Self::default(); };
         let is_enabled = |obj: &serde_json::Value| obj.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false);
         let parse_timing = |obj: &serde_json::Value| {
@@ -212,6 +238,7 @@ impl ImpactReactionConfig {
                         amount: 0.0,
                         timing: parse_timing(c),
                         custom_params,
+                        animation: None,
                     };
                 }
             }
@@ -224,6 +251,7 @@ impl ImpactReactionConfig {
                     amount: b.get("squish_amount").and_then(|a| a.as_f64()).unwrap_or(0.4) as f32,
                     timing: parse_timing(b),
                     custom_params: Vec::new(),
+                    animation: None,
                 };
             }
         }
@@ -235,6 +263,7 @@ impl ImpactReactionConfig {
                     amount: d.get("viscosity").and_then(|x| x.as_f64()).unwrap_or(0.6) as f32,
                     timing: parse_timing(d),
                     custom_params: Vec::new(),
+                    animation: None,
                 };
             }
         }
@@ -246,6 +275,7 @@ impl ImpactReactionConfig {
                     amount: j.get("intensity").and_then(|x| x.as_f64()).unwrap_or(0.8) as f32,
                     timing: parse_timing(j),
                     custom_params: Vec::new(),
+                    animation: None,
                 };
             }
         }
@@ -439,6 +469,9 @@ fn fire_impact_reaction_local(
     // its reaction is kept under its own name, the one it's drawn by
     let source_name = crate::puppet_parts::reaction_target(target_name);
     let target_name = source_name.as_str();
+    if let Some((clip, _)) = &reaction.animation {
+        crate::puppet_redeem::play_reaction_animation(clip, target_name);
+    }
     match reaction.kind {
         ImpactReactionKind::Bounce | ImpactReactionKind::Jolt | ImpactReactionKind::PixelDrip | ImpactReactionKind::Custom(_) => {
             // Persistent per-frame reaction: the render pass reads this every
@@ -1109,7 +1142,7 @@ impl PhysicsEngine {
                 if shake.enabled && shake.timing == ShakeTiming::Start {
                     crate::state::get_state().trigger_screen_shake(shake.duration, shake.intensity);
                 }
-                if impact_reaction.kind != ImpactReactionKind::None && impact_reaction.timing == ShakeTiming::Start {
+                if let Some(impact_reaction) = impact_reaction.at(ShakeTiming::Start) {
                     let target_hb = {
                         let slots = get_state().target_slots.read();
                         let hitboxes = get_state().hitboxes.read();
@@ -1508,8 +1541,8 @@ impl PhysicsEngine {
             crate::state::get_state().trigger_screen_shake(th.shake.duration, th.shake.intensity);
         }
 
-        if th.impact_reaction.kind != ImpactReactionKind::None && th.impact_reaction.timing == ShakeTiming::Impact {
-            fire_impact_reaction_local(&th.impact_reaction, &th.target_name, th.x, th.y, target_hb, new_particles);
+        if let Some(reaction) = th.impact_reaction.at(ShakeTiming::Impact) {
+            fire_impact_reaction_local(&reaction, &th.target_name, th.x, th.y, target_hb, new_particles);
         }
 
         match th.collision {
@@ -1713,6 +1746,35 @@ impl PhysicsEngine {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_puppet_animation_goes_with_the_reaction_at_its_own_time() {
+        use super::{ImpactReactionConfig, ImpactReactionKind, ShakeTiming};
+        let v = serde_json::json!({
+            "bounce": { "enabled": true, "timing": "impact" },
+            "puppet_animation": { "enabled": true, "clip": " Knocked Out ", "timing": "start" }
+        });
+        let c = ImpactReactionConfig::parse(Some(&v));
+        assert_eq!(c.kind, ImpactReactionKind::Bounce);
+        assert_eq!(c.animation, Some(("Knocked Out".to_string(), ShakeTiming::Start)));
+        // At start: the animation alone; on impact: the bounce alone
+        let start = c.at(ShakeTiming::Start).unwrap();
+        assert_eq!((start.kind, start.animation.is_some()), (ImpactReactionKind::None, true));
+        let hit = c.at(ShakeTiming::Impact).unwrap();
+        assert_eq!((hit.kind, hit.animation.is_some()), (ImpactReactionKind::Bounce, false));
+        // The animation alone, no style: still fires
+        let only = ImpactReactionConfig::parse(Some(&serde_json::json!({ "puppet_animation": { "enabled": true, "clip": "Wave" } })));
+        assert!(only.at(ShakeTiming::Impact).is_some_and(|r| r.animation.is_some()) && only.at(ShakeTiming::Start).is_none());
+        // Off, or no clip, or an older redeem without it: nothing
+        for v in [
+            serde_json::json!({ "puppet_animation": { "enabled": false, "clip": "Wave" } }),
+            serde_json::json!({ "puppet_animation": { "enabled": true, "clip": "  " } }),
+            serde_json::json!({ "bounce": { "enabled": false } }),
+        ] {
+            let c = ImpactReactionConfig::parse(Some(&v));
+            assert!(c.animation.is_none() && c.at(ShakeTiming::Impact).is_none() && c.at(ShakeTiming::Start).is_none());
+        }
+    }
+
     use super::*;
 
     #[test]

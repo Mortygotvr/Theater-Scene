@@ -520,10 +520,8 @@ impl FireEngine {
             if self.config.shake.enabled && self.config.shake.timing == crate::physics::ShakeTiming::Impact {
                 crate::state::get_state().trigger_screen_shake(self.config.shake.duration, self.config.shake.intensity);
             }
-            if self.config.impact_reaction.kind != crate::physics::ImpactReactionKind::None
-                && self.config.impact_reaction.timing == crate::physics::ShakeTiming::Impact
-            {
-                crate::physics::fire_impact_reaction(&self.config.impact_reaction, &self.target_name, self.target_x, self.target_y + self.config.offset_y);
+            if let Some(reaction) = self.config.impact_reaction.at(crate::physics::ShakeTiming::Impact) {
+                crate::physics::fire_impact_reaction(&reaction, &self.target_name, self.target_x, self.target_y + self.config.offset_y);
             }
         }
     }

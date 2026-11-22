@@ -26,8 +26,8 @@ fn maybe_trigger_start_shake(shake: &crate::physics::ShakeConfig) {
 /// Same reasoning as `maybe_trigger_start_shake`: fluid/fire/lightning have no
 /// discrete "impact" moment, so their avatar reaction only ever fires "on start".
 fn maybe_trigger_start_reaction(reaction: &crate::physics::ImpactReactionConfig, target_name: &str, target_x: f32, target_y: f32) {
-    if reaction.kind != crate::physics::ImpactReactionKind::None && reaction.timing == crate::physics::ShakeTiming::Start {
-        crate::physics::fire_impact_reaction(reaction, target_name, target_x, target_y);
+    if let Some(reaction) = reaction.at(crate::physics::ShakeTiming::Start) {
+        crate::physics::fire_impact_reaction(&reaction, target_name, target_x, target_y);
     }
 }
 

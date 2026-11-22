@@ -29,6 +29,43 @@ fn with_wildcards(v: &Value, wildcards: &[String]) -> Value {
     }
 }
 
+/// An impact reaction's Puppet animation (`impactReactions.puppet_animation`):
+/// `clip` played once on `target` if it's a Puppet source, else on every
+/// Puppet. Off the caller's thread (the physics step calls it).
+pub fn play_reaction_animation(clip: &str, target: &str) {
+    let (clip, target) = (clip.to_string(), target.to_string());
+    let _ = std::thread::Builder::new().name("puppet-reaction-animation".into()).spawn(move || {
+        let ask = |source: &str| {
+            let args = json!({ "action": "animation", "mode": "once", "clip": clip, "source": source });
+            crate::obs_procs::call_proc_json(PROC, &args.to_string()).and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        };
+        let is_puppet = !target.is_empty() && puppets().iter().any(|p| p.get("source").and_then(|s| s.as_str()) == Some(target.as_str()));
+        let out = ask(if is_puppet { &target } else { "" });
+        match out {
+            None => crate::obs_source::trust_log("[Puppet reaction] ⚠️ Theater Puppet isn't loaded"),
+            Some(o) if o.get("ok").and_then(|v| v.as_bool()) == Some(false) => {
+                crate::obs_source::trust_log(&format!("[Puppet reaction] ⚠️ \"{clip}\": {}", o.get("error").and_then(|e| e.as_str()).unwrap_or("failed")))
+            }
+            Some(_) => crate::obs_source::trust_log(&format!("[Puppet reaction] 🎬 \"{clip}\" on {}", if is_puppet { target.as_str() } else { "every Puppet" })),
+        }
+    });
+}
+
+/// Every animation the Puppets have (their own and their Animation folder's), once each
+pub fn animation_names() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in puppets() {
+        for a in p.get("animations").and_then(|a| a.as_array()).into_iter().flatten() {
+            if let Some(n) = a.as_str() {
+                if !out.iter().any(|o| o == n) {
+                    out.push(n.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The command a redeem's `puppet` setting holds, its wildcards put in
 pub fn command(puppet: &Value, wildcards: &[String]) -> Value {
     with_wildcards(puppet, wildcards)
@@ -159,7 +196,7 @@ pub fn is_prefab(puppet: Option<&Value>) -> bool {
 /// contact frame (seconds from now), the Impact Audio, and the shake and the
 /// reaction set On Contact. On the avatar the prefab spawned with.
 fn prefab_effects(val: &Value, plan: &Value) {
-    use crate::physics::{ImpactReactionConfig, ImpactReactionKind, ShakeTiming};
+    use crate::physics::{ImpactReactionConfig, ShakeTiming};
     let text = |keys: &[&str]| keys.iter().find_map(|k| val.get(*k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())).map(str::to_string);
     let sound = text(&["collisionSound", "collision_sound", "collisionSoundPath", "collision_sound_path"]);
     let map: std::collections::HashMap<String, Value> = val.as_object().map(|m| m.clone().into_iter().collect()).unwrap_or_default();
@@ -169,16 +206,16 @@ fn prefab_effects(val: &Value, plan: &Value) {
     let (w, h) = crate::obs_source::get_obs_canvas_resolution();
     let (cx, cy) = (w.max(1) as f32 * 0.5, h.max(1) as f32 * 0.5);
     let shakes = |when: ShakeTiming| shake.enabled && shake.timing == when;
-    let reacts = |when: ShakeTiming| reaction.kind != ImpactReactionKind::None && reaction.timing == when;
     if shakes(ShakeTiming::Start) {
         crate::state::get_state().trigger_screen_shake(shake.duration, shake.intensity);
     }
-    if reacts(ShakeTiming::Start) {
-        crate::physics::fire_impact_reaction(&reaction, &target, cx, cy);
+    if let Some(r) = reaction.at(ShakeTiming::Start) {
+        crate::physics::fire_impact_reaction(&r, &target, cx, cy);
     }
     let contacts: Vec<f64> = plan.get("contacts").and_then(|c| c.as_array()).map(|a| a.iter().filter_map(|t| t.as_f64()).filter(|t| t.is_finite() && *t >= 0.0).collect()).unwrap_or_default();
-    let (shake_on, react_on) = (shakes(ShakeTiming::Impact), reacts(ShakeTiming::Impact));
-    if contacts.is_empty() || (sound.is_none() && !shake_on && !react_on) {
+    let on_contact = reaction.at(ShakeTiming::Impact);
+    let shake_on = shakes(ShakeTiming::Impact);
+    if contacts.is_empty() || (sound.is_none() && !shake_on && on_contact.is_none()) {
         return;
     }
     let _ = std::thread::Builder::new().name("puppet-prefab-contacts".into()).spawn(move || {
@@ -194,8 +231,8 @@ fn prefab_effects(val: &Value, plan: &Value) {
             if shake_on {
                 crate::state::get_state().trigger_screen_shake(shake.duration, shake.intensity);
             }
-            if react_on {
-                crate::physics::fire_impact_reaction(&reaction, &target, cx, cy);
+            if let Some(r) = &on_contact {
+                crate::physics::fire_impact_reaction(r, &target, cx, cy);
             }
             crate::obs_source::trust_log(&format!("[Puppet redeem] 💥 Prefab contact at {t:.2} s"));
         }

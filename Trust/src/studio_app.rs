@@ -739,6 +739,23 @@ impl RedeemConfig {
         }
     }
 
+    /// The Puppet animation played with the reaction (`puppet_animation`:
+    /// {enabled, clip, timing}): (on, clip, "impact" | "start")
+    pub fn get_puppet_animation(&self) -> (bool, String, String) {
+        let a = self.impact_reactions.as_ref().and_then(|v| v.get("puppet_animation"));
+        let on = a.and_then(|a| a.get("enabled")).and_then(|e| e.as_bool()).unwrap_or(false);
+        let clip = a.and_then(|a| a.get("clip")).and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let timing = a.and_then(|a| a.get("timing")).and_then(|t| t.as_str()).unwrap_or("impact").to_string();
+        (on, clip, timing)
+    }
+
+    pub fn set_puppet_animation(&mut self, on: bool, clip: &str, timing: &str) {
+        self.ensure_reactions();
+        if let Some(obj) = self.impact_reactions.as_mut().and_then(|v| v.as_object_mut()) {
+            obj.insert("puppet_animation".to_string(), serde_json::json!({ "enabled": on, "clip": clip, "timing": timing }));
+        }
+    }
+
     /// "impact" (throwables only: fires on contact) or "start" (fires
     /// immediately on trigger) for whichever reaction is currently enabled.
     pub fn get_reaction_timing(&self) -> String {
@@ -7032,6 +7049,63 @@ impl StudioApp {
                                                 }
                                             }
                                             ReactionKind::None => {}
+                                        }
+
+                                        // 🎬 A Theater Puppet animation with it (any style, or none)
+                                        ui.separator();
+                                        let (mut on, mut clip, mut timing) = item.config.get_puppet_animation();
+                                        let can_contact = item.config.redeem_type == "image"
+                                            || item.config.redeem_type == "throwable"
+                                            || (item.config.redeem_type == "webgl-fire" && item.config.stream_mode.as_deref() == Some("grid"))
+                                            || (item.config.redeem_type == "puppet" && crate::puppet_redeem::is_prefab(item.config.puppet.as_ref()));
+                                        let mut changed = false;
+                                        if !can_contact && timing == "impact" {
+                                            timing = "start".to_string();
+                                            changed = on;
+                                        }
+                                        changed |= ui.checkbox(&mut on, "🎬 Puppet animation").on_hover_text("A Theater Puppet animation played once with the reaction: on the target if it's a Puppet, else on every Puppet. Its own and its Animation folder's.").changed();
+                                        if on {
+                                            ui.horizontal(|ui| {
+                                                ui.label("Animation:");
+                                                if ui.add(egui::TextEdit::singleline(&mut clip).hint_text("its name in Puppet").desired_width(180.0)).changed() {
+                                                    changed = true;
+                                                }
+                                                let names = crate::puppet_redeem::animation_names();
+                                                if !names.is_empty() {
+                                                    ui.menu_button("▾", |ui| {
+                                                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                                                            for n in &names {
+                                                                if ui.button(n).clicked() {
+                                                                    clip = n.clone();
+                                                                    changed = true;
+                                                                    ui.close_menu();
+                                                                }
+                                                            }
+                                                        });
+                                                    });
+                                                } else {
+                                                    ui.label(egui::RichText::new("(no Puppet loaded)").italics().color(Color32::from_rgb(148, 163, 184)));
+                                                }
+                                            });
+                                            ui.horizontal(|ui| {
+                                                ui.label("⏰ Plays:");
+                                                egui::ComboBox::from_id_salt("puppet_animation_timing")
+                                                    .selected_text(if timing == "start" { "On Start" } else { "On Contact" })
+                                                    .show_ui(ui, |ui| {
+                                                        if can_contact && ui.selectable_label(timing == "impact", "On Contact").clicked() {
+                                                            timing = "impact".to_string();
+                                                            changed = true;
+                                                        }
+                                                        if ui.selectable_label(timing == "start", "On Start (fires immediately)").clicked() {
+                                                            timing = "start".to_string();
+                                                            changed = true;
+                                                        }
+                                                    });
+                                            });
+                                        }
+                                        if changed {
+                                            item.config.set_puppet_animation(on, clip.trim(), &timing);
+                                            item.is_dirty = true;
                                         }
                                     });
 
