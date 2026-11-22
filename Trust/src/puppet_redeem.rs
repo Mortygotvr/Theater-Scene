@@ -519,10 +519,10 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
         "color" => {
             let slots = list("colour_slots");
             // One slot, each slot its own colour, or the rainbow
-            let mut mode = if cmd.get("rainbow").is_some() { "rainbow" } else if cmd.get("colors").is_some_and(|c| c.is_object()) { "each" } else { "one" }.to_string();
+            let mut mode = if cmd.get("rainbow").is_some() { "rainbow" } else if cmd.get("gradient").is_some() { "gradient" } else if cmd.get("colors").is_some_and(|c| c.is_object()) { "each" } else { "one" }.to_string();
             ui.horizontal(|ui| {
                 ui.label("Set:");
-                for (value, label) in [("one", "One slot"), ("each", "Each slot its own"), ("rainbow", "🌈 Rainbow")] {
+                for (value, label) in [("one", "One slot"), ("each", "Each slot its own"), ("gradient", "🌗 Gradient"), ("rainbow", "🌈 Rainbow")] {
                     if ui.selectable_label(mode == value, label).clicked() && mode != value {
                         mode = value.to_string();
                         changed = true;
@@ -550,7 +550,7 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
             let hint = "#rrggbb, red, random, {1}";
             let keep = |cmd: &mut Value, keys: &[&str]| {
                 if let Some(map) = cmd.as_object_mut() {
-                    for k in ["slot", "color", "colors", "rainbow"] {
+                    for k in ["slot", "color", "colors", "rainbow", "gradient"] {
                         if !keys.contains(&k) {
                             map.remove(k);
                         }
@@ -610,13 +610,69 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                     cmd["colors"] = Value::Object(colors);
                     ui.label(egui::RichText::new("All at once, each its own: \"random\" on several slots gives each a different colour; an empty one stays as it is; a slot the avatar doesn't have is skipped.").small().color(egui::Color32::from_rgb(148, 163, 184)));
                 }
+                "gradient" => {
+                    keep(cmd, &["gradient"]);
+                    let g = cmd.get("gradient").filter(|g| g.is_object()).cloned().unwrap_or_else(|| json!({ "top": "#ff66b3", "bottom": "#3366ff", "direction": "down" }));
+                    let mut top = g.get("top").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let mut bottom = g.get("bottom").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let mut direction = g.get("direction").and_then(|v| v.as_str()).unwrap_or("down").to_string();
+                    let mut slots_text = g.get("slots").and_then(|v| v.as_array()).map(|a| a.iter().map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())).collect::<Vec<_>>().join(", ")).unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label("Direction:");
+                        for (value, label) in [("down", "Top → bottom"), ("side", "Left → right (as seen)"), ("front", "Front → back")] {
+                            if ui.selectable_label(direction == value, label).clicked() && direction != value {
+                                direction = value.to_string();
+                                changed = true;
+                            }
+                        }
+                    });
+                    let (first, second) = match direction.as_str() { "side" => ("Left:", "Right:"), "front" => ("Front:", "Back:"), _ => ("Top:", "Bottom:") };
+                    ui.horizontal(|ui| {
+                        ui.label(first);
+                        if colour_row(ui, &mut top, hint) {
+                            changed = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(second);
+                        if colour_row(ui, &mut bottom, hint) {
+                            changed = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Slots:");
+                        if ui.add(egui::TextEdit::singleline(&mut slots_text).hint_text("empty: every slot; or 2, 3").desired_width(120.0)).changed() {
+                            changed = true;
+                        }
+                        if !slots.is_empty() {
+                            ui.label(egui::RichText::new(format!("(this avatar has: {})", slots.join(", "))).small());
+                        }
+                    });
+                    let list: Vec<Value> = slots_text.split(',').map(str::trim).filter(|t| !t.is_empty()).map(|t| t.parse::<u64>().map(Value::from).unwrap_or_else(|_| json!(t))).collect();
+                    let mut g = json!({ "top": top, "bottom": bottom, "direction": direction });
+                    if !list.is_empty() {
+                        g["slots"] = Value::Array(list);
+                    }
+                    cmd["gradient"] = g;
+                    ui.label(egui::RichText::new("On the avatar standing still: hair from its roots to its tips, a skirt from the waist down; it stays on the body when she moves. The timer takes it off (over the Transition).").small().color(egui::Color32::from_rgb(148, 163, 184)));
+                }
                 "rainbow" => {
                     keep(cmd, &["rainbow"]);
                     let mut speed = cmd.pointer("/rainbow/speed").and_then(|v| v.as_f64()).unwrap_or(0.25);
+                    let mut flow = cmd.pointer("/rainbow/flow").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     if ui.add(egui::Slider::new(&mut speed, 0.0..=2.0).text("Turning (turns a second; 0 still)")).changed() {
                         changed = true;
                     }
-                    cmd["rainbow"] = json!({ "speed": speed });
+                    ui.horizontal(|ui| {
+                        ui.label("Flow:");
+                        for (value, label) in [("", "One hue a slot"), ("down", "Down the part"), ("side", "Across"), ("front", "Front to back")] {
+                            if ui.selectable_label(flow == value, label).clicked() && flow != value {
+                                flow = value.to_string();
+                                changed = true;
+                            }
+                        }
+                    });
+                    cmd["rainbow"] = if flow.is_empty() { json!({ "speed": speed }) } else { json!({ "speed": speed, "flow": flow }) };
                     ui.label(egui::RichText::new("Every slot of the avatar its own hue round the colour wheel. The timer turns it off (it fades out over the Transition).").small().color(egui::Color32::from_rgb(148, 163, 184)));
                 }
                 _ => {
