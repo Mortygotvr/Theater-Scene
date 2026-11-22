@@ -7071,28 +7071,10 @@ impl StudioApp {
                                         }
                                         changed |= ui.checkbox(&mut on, "🎬 Puppet animation").on_hover_text("A Theater Puppet animation played once with the reaction: on the target if it's a Puppet, else on every Puppet. Its own and its Animation folder's.").changed();
                                         if on {
-                                            ui.horizontal(|ui| {
-                                                ui.label("Animation:");
-                                                if ui.add(egui::TextEdit::singleline(&mut clip).hint_text("its name in Puppet").desired_width(180.0)).changed() {
-                                                    changed = true;
-                                                }
-                                                let names = crate::puppet_redeem::animation_names();
-                                                if !names.is_empty() {
-                                                    ui.menu_button("▾", |ui| {
-                                                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                                                            for n in &names {
-                                                                if ui.button(n).clicked() {
-                                                                    clip = n.clone();
-                                                                    changed = true;
-                                                                    ui.close_menu();
-                                                                }
-                                                            }
-                                                        });
-                                                    });
-                                                } else {
-                                                    ui.label(egui::RichText::new("(no Puppet loaded)").italics().color(Color32::from_rgb(148, 163, 184)));
-                                                }
-                                            });
+                                            let names = crate::puppet_redeem::animation_names();
+                                            if crate::puppet_redeem::animation_picker(ui, "reaction_puppet_animation", "Animation:", &mut clip, &names, &[]) {
+                                                changed = true;
+                                            }
                                             ui.horizontal(|ui| {
                                                 ui.label("⏰ Plays:");
                                                 egui::ComboBox::from_id_salt("puppet_animation_timing")

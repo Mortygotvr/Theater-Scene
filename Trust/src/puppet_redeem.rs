@@ -51,6 +51,59 @@ pub fn play_reaction_animation(clip: &str, target: &str) {
     });
 }
 
+/// An animation picked in a dropdown of `names` (and the `specials`: (value,
+/// label), like "its first"), or typed (Type: a name, or {1} for the viewer's
+/// text). One not loaded any more is shown so. True when it changed
+pub fn animation_picker(ui: &mut egui::Ui, id: &str, label: &str, value: &mut String, names: &[String], specials: &[(&str, &str)]) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let shown = specials
+            .iter()
+            .find(|(v, _)| *v == value.as_str())
+            .map(|(_, l)| l.to_string())
+            .unwrap_or_else(|| {
+                if value.trim().is_empty() {
+                    "(choose one)".to_string()
+                } else if names.contains(value) || value.contains('{') {
+                    value.clone()
+                } else {
+                    format!("{value} (not loaded)")
+                }
+            });
+        egui::ComboBox::from_id_salt(id).selected_text(shown).width(240.0).show_ui(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (v, l) in specials {
+                    if ui.selectable_label(value.as_str() == *v, *l).clicked() {
+                        *value = v.to_string();
+                        changed = true;
+                    }
+                }
+                for n in names {
+                    if ui.selectable_label(value == n, n).clicked() {
+                        *value = n.clone();
+                        changed = true;
+                    }
+                }
+                if names.is_empty() {
+                    ui.label(egui::RichText::new("No animation loaded: ⚙ Puppet Configuration → 🎬 Animations → ➕ Add").italics());
+                }
+            });
+        });
+        // Typed instead: a name, or {1} (the viewer's text)
+        let typing_id = ui.make_persistent_id((id, "typing"));
+        let mut typing = ui.data(|d| d.get_temp::<bool>(typing_id)).unwrap_or_else(|| value.contains('{'));
+        if ui.small_button("Type").on_hover_text("Type it instead: a name, or {1} for the viewer's text").clicked() {
+            typing = !typing;
+            ui.data_mut(|d| d.insert_temp(typing_id, typing));
+        }
+        if typing && ui.add(egui::TextEdit::singleline(value).desired_width(140.0)).changed() {
+            changed = true;
+        }
+    });
+    changed
+}
+
 /// Every animation the Puppets have (their own and their Animation folder's), once each
 pub fn animation_names() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -271,7 +324,7 @@ fn get_f(cmd: &Value, key: &str, default: f64) -> f64 {
     cmd.get(key).and_then(|v| v.as_f64()).unwrap_or(default)
 }
 
-/// A text setting with a ▾ menu of the known values; true when it changed
+/// A text setting with a List menu of the known values (▾ has no glyph in the font: a square); true when it changed
 fn text_with_choices(ui: &mut egui::Ui, label: &str, cmd: &mut Value, key: &str, choices: &[String], hint: &str) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -282,7 +335,7 @@ fn text_with_choices(ui: &mut egui::Ui, label: &str, cmd: &mut Value, key: &str,
             changed = true;
         }
         if !choices.is_empty() {
-            ui.menu_button("▾", |ui| {
+            ui.menu_button("List", |ui| {
                 egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
                     for c in choices {
                         if ui.button(c).clicked() {
@@ -373,7 +426,15 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
     match action.as_str() {
         "animation" => {
             changed |= choice(ui, "Play:", cmd, "mode", &[("once", "Once, then back"), ("loop", "Loop (in place of the idle motion)"), ("stop", "Stop the one playing once")]);
-            changed |= text_with_choices(ui, "Animation:", cmd, "clip", &list("animations"), "its name in the GLB");
+            if get_str(cmd, "mode", "once") != "stop" {
+                // Every Puppet's (no source chosen), else that one's
+                let names = if source.trim().is_empty() { animation_names() } else { list("animations") };
+                let mut clip = get_str(cmd, "clip", "").to_string();
+                if animation_picker(ui, "puppet_redeem_animation", "Animation:", &mut clip, &names, &[]) {
+                    cmd["clip"] = json!(clip);
+                    changed = true;
+                }
+            }
         }
         "shape" | "shape_anim" => {
             changed |= text_with_choices(ui, "GLB:", cmd, "glb", &glb_choices, "0 = the avatar, or its name");
@@ -723,9 +784,12 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
             });
             let glb = get_str(cmd, "glb", "").trim().to_string();
             let clips = if glb.is_empty() || glb.contains('{') { None } else { prefab_clips(&glb) };
-            let mut names: Vec<String> = clips.iter().flatten().map(|(n, _, _)| n.clone()).collect();
-            names.push("random".into());
-            changed |= text_with_choices(ui, "Animation:", cmd, "clip", &names, "empty: its first; random; or its name");
+            let names: Vec<String> = clips.iter().flatten().map(|(n, _, _)| n.clone()).collect();
+            let mut clip = get_str(cmd, "clip", "").to_string();
+            if animation_picker(ui, "puppet_prefab_animation", "Animation:", &mut clip, &names, &[("", "Its first"), ("random", "Random")]) {
+                cmd["clip"] = json!(clip);
+                changed = true;
+            }
             let wanted = get_str(cmd, "clip", "").trim().to_string();
             match &clips {
                 None if !glb.is_empty() && !glb.contains('{') => {
