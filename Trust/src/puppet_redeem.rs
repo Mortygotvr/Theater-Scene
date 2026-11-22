@@ -518,19 +518,18 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
         }
         "color" => {
             let slots = list("colour_slots");
-            // One slot, or every slot at once (each its own colour)
-            let every = cmd.get("colors").is_some_and(|c| c.is_object());
-            let mut mode = if every { "every" } else { "one" }.to_string();
+            // One slot, each slot its own colour, or the rainbow
+            let mut mode = if cmd.get("rainbow").is_some() { "rainbow" } else if cmd.get("colors").is_some_and(|c| c.is_object()) { "each" } else { "one" }.to_string();
             ui.horizontal(|ui| {
                 ui.label("Set:");
-                for (value, label) in [("one", "One slot"), ("every", "Every slot at once")] {
+                for (value, label) in [("one", "One slot"), ("each", "Each slot its own"), ("rainbow", "🌈 Rainbow")] {
                     if ui.selectable_label(mode == value, label).clicked() && mode != value {
                         mode = value.to_string();
                         changed = true;
                     }
                 }
             });
-            // A colour: the picker writes #rrggbb; the text can be a wildcard or "reset"
+            // A colour: the picker writes #rrggbb; the text can be a name, random, a wildcard or reset
             let colour_row = |ui: &mut egui::Ui, text: &mut String, hint: &str| -> bool {
                 let mut changed = false;
                 let parsed = text.trim_start_matches('#');
@@ -548,63 +547,103 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                 }
                 changed
             };
-            if mode == "every" {
+            let hint = "#rrggbb, red, random, {1}";
+            let keep = |cmd: &mut Value, keys: &[&str]| {
                 if let Some(map) = cmd.as_object_mut() {
-                    map.remove("slot");
-                    map.remove("color");
-                }
-                let mut colors = cmd.get("colors").and_then(|c| c.as_object()).cloned().unwrap_or_default();
-                // The avatar's slots, and any this redeem already sets
-                let mut all: Vec<String> = slots.clone();
-                for k in colors.keys() {
-                    if !all.contains(k) {
-                        all.push(k.clone());
+                    for k in ["slot", "color", "colors", "rainbow"] {
+                        if !keys.contains(&k) {
+                            map.remove(k);
+                        }
                     }
                 }
-                all.sort_by_key(|s| s.parse::<u32>().unwrap_or(u32::MAX));
-                if all.is_empty() {
-                    ui.label(egui::RichText::new("Load the avatar in a Puppet source to list its colour slots.").small().italics());
+            };
+            match mode.as_str() {
+                "each" => {
+                    keep(cmd, &["colors"]);
+                    let mut colors = cmd.get("colors").and_then(|c| c.as_object()).cloned().unwrap_or_default();
+                    // A new list starts with the avatar's slots; any slot number can be added
+                    if colors.is_empty() {
+                        for sl in &slots {
+                            colors.insert(sl.clone(), json!("random"));
+                        }
+                        changed = true;
+                    }
+                    let mut all: Vec<String> = colors.keys().cloned().collect();
+                    all.sort_by_key(|s| s.parse::<u32>().unwrap_or(u32::MAX));
+                    let mut remove = None;
+                    let mut renumber = None;
+                    for slot in &all {
+                        let mut text = colors.get(slot).and_then(|c| c.as_str()).unwrap_or("").to_string();
+                        let mut n: i64 = slot.parse().unwrap_or(0);
+                        ui.horizontal(|ui| {
+                            ui.label("Slot");
+                            if ui.add(egui::DragValue::new(&mut n).range(0..=99)).on_hover_text("Its number: one this avatar has, or another avatar's").changed() {
+                                renumber = Some((slot.clone(), n.to_string()));
+                            }
+                            if colour_row(ui, &mut text, hint) {
+                                changed = true;
+                            }
+                            if ui.small_button("✕").on_hover_text("Not in this redeem").clicked() {
+                                remove = Some(slot.clone());
+                            }
+                            if !slots.is_empty() && !slots.contains(slot) {
+                                ui.label(egui::RichText::new("(not on this avatar)").small());
+                            }
+                        });
+                        colors.insert(slot.clone(), json!(text));
+                    }
+                    if let Some((from, to)) = renumber.filter(|(_, to)| !colors.contains_key(to)) {
+                        if let Some(v) = colors.remove(&from) {
+                            colors.insert(to, v);
+                            changed = true;
+                        }
+                    }
+                    if let Some(r) = remove {
+                        colors.remove(&r);
+                        changed = true;
+                    }
+                    if ui.button("➕ Add slot").on_hover_text("Any slot number: one this avatar has, or another avatar's").clicked() {
+                        let next = (0..100u32).find(|n| !colors.contains_key(&n.to_string())).unwrap_or(0);
+                        colors.insert(next.to_string(), json!("random"));
+                        changed = true;
+                    }
+                    cmd["colors"] = Value::Object(colors);
+                    ui.label(egui::RichText::new("All at once, each its own: \"random\" on several slots gives each a different colour; an empty one stays as it is; a slot the avatar doesn't have is skipped.").small().color(egui::Color32::from_rgb(148, 163, 184)));
                 }
-                for slot in &all {
-                    let mut text = colors.get(slot).and_then(|c| c.as_str()).unwrap_or("").to_string();
+                "rainbow" => {
+                    keep(cmd, &["rainbow"]);
+                    let mut speed = cmd.pointer("/rainbow/speed").and_then(|v| v.as_f64()).unwrap_or(0.25);
+                    if ui.add(egui::Slider::new(&mut speed, 0.0..=2.0).text("Turning (turns a second; 0 still)")).changed() {
+                        changed = true;
+                    }
+                    cmd["rainbow"] = json!({ "speed": speed });
+                    ui.label(egui::RichText::new("Every slot of the avatar its own hue round the colour wheel. The timer turns it off (it fades out over the Transition).").small().color(egui::Color32::from_rgb(148, 163, 184)));
+                }
+                _ => {
+                    keep(cmd, &["slot", "color"]);
+                    let mut slot = get_f(cmd, "slot", slots.first().and_then(|s| s.parse().ok()).unwrap_or(0.0)) as i64;
                     ui.horizontal(|ui| {
-                        ui.label(format!("Slot {slot}:"));
-                        if colour_row(ui, &mut text, "empty: as it is") {
+                        ui.label("Colour slot:");
+                        if ui.add(egui::DragValue::new(&mut slot).range(0..=99)).changed() {
+                            changed = true;
+                        }
+                        if !slots.is_empty() {
+                            ui.label(egui::RichText::new(format!("(this avatar has: {})", slots.join(", "))).small());
+                        }
+                    });
+                    cmd["slot"] = json!(slot);
+                    let mut text = get_str(cmd, "color", "#ff4080").to_string();
+                    ui.horizontal(|ui| {
+                        ui.label("Colour:");
+                        if colour_row(ui, &mut text, hint) {
                             changed = true;
                         }
                     });
-                    if text.trim().is_empty() {
-                        colors.remove(slot);
-                    } else {
-                        colors.insert(slot.clone(), json!(text));
-                    }
+                    cmd["color"] = json!(text);
                 }
-                cmd["colors"] = Value::Object(colors);
-                ui.label(egui::RichText::new("All set at once; a slot left empty stays as it is. The timer puts them all back together.").small().color(egui::Color32::from_rgb(148, 163, 184)));
-            } else {
-                if let Some(map) = cmd.as_object_mut() {
-                    map.remove("colors");
-                }
-                let mut slot = get_f(cmd, "slot", slots.first().and_then(|s| s.parse().ok()).unwrap_or(0.0)) as i64;
-                ui.horizontal(|ui| {
-                    ui.label("Colour slot:");
-                    if ui.add(egui::DragValue::new(&mut slot).range(0..=99)).changed() {
-                        changed = true;
-                    }
-                    if !slots.is_empty() {
-                        ui.label(egui::RichText::new(format!("(this avatar has: {})", slots.join(", "))).small());
-                    }
-                });
-                cmd["slot"] = json!(slot);
-                let mut text = get_str(cmd, "color", "#ff4080").to_string();
-                ui.horizontal(|ui| {
-                    ui.label("Colour:");
-                    if colour_row(ui, &mut text, "#rrggbb, {1} or reset") {
-                        changed = true;
-                    }
-                });
-                cmd["color"] = json!(text);
             }
+            // The change gliding: red, green and blue moving from the old to the new
+            changed |= slider(ui, "Transition", cmd, "fade", 0.0..=10.0, 0.0, " s");
         }
         "prefab" => {
             ui.horizontal(|ui| {
