@@ -62,8 +62,8 @@ pub struct Package {
 /// custom_lua::localize_paths); every other file at the root.
 pub fn export(config: &RedeemConfig, out: &Path) -> Result<ExportReport, String> {
     let clips = animation_clips(&serde_json::to_value(config).map_err(|e| e.to_string())?);
-    let files = if clips.is_empty() { Vec::new() } else { puppet_animation_files() };
-    export_with(config, out, &files)
+    let (files, avatars) = if clips.is_empty() { (Vec::new(), Vec::new()) } else { puppet_animation_files() };
+    export_with(config, out, &files, &avatars)
 }
 
 /// The Puppet animations a redeem plays: its 🎭 Puppet action's, and its
@@ -84,14 +84,22 @@ fn animation_clips(settings: &serde_json::Value) -> Vec<String> {
 }
 
 /// What the Puppets running say: (clip, the file it came from) for their
-/// Animation folder's clips
-fn puppet_animation_files() -> Vec<(String, PathBuf)> {
-    puppets()
-        .unwrap_or_default()
+/// Animation folder's clips; and the clips that are part of their avatar
+/// (its default animation: it travels with the avatar, not the redeem)
+fn puppet_animation_files() -> (Vec<(String, PathBuf)>, Vec<String>) {
+    let list = puppets().unwrap_or_default();
+    let files: Vec<(String, PathBuf)> = list
         .iter()
         .flat_map(|p| p.get("animation_files").and_then(|a| a.as_array()).cloned().unwrap_or_default())
         .filter_map(|f| Some((f.get("clip")?.as_str()?.to_string(), PathBuf::from(f.get("file")?.as_str()?))))
-        .collect()
+        .collect();
+    let avatars = list
+        .iter()
+        .flat_map(|p| p.get("animations").and_then(|a| a.as_array()).cloned().unwrap_or_default())
+        .filter_map(|c| c.as_str().map(str::to_string))
+        .filter(|c| !files.iter().any(|(f, _)| f == c))
+        .collect();
+    (files, avatars)
 }
 
 /// The Puppet sources (Puppet's `list`); None when Theater Puppet isn't loaded
@@ -101,8 +109,9 @@ fn puppets() -> Option<Vec<serde_json::Value>> {
     Some(v.get("puppets").and_then(|p| p.as_array()).cloned().unwrap_or_default())
 }
 
-/// `export`, the Puppets' animation files given (clip, file)
-fn export_with(config: &RedeemConfig, out: &Path, animation_files: &[(String, PathBuf)]) -> Result<ExportReport, String> {
+/// `export`, the Puppets' animation files given (clip, file), and the clips
+/// that are part of their avatar
+fn export_with(config: &RedeemConfig, out: &Path, animation_files: &[(String, PathBuf)], avatar_clips: &[String]) -> Result<ExportReport, String> {
     let mut settings = serde_json::to_value(config).map_err(|e| e.to_string())?;
     let mut files = Files::default();
     let mut missing = Vec::new();
@@ -181,7 +190,9 @@ fn export_with(config: &RedeemConfig, out: &Path, animation_files: &[(String, Pa
                 files.add_at(&at, disk);
                 packed.push(serde_json::Value::String(at));
             }
-            None => missing.push(format!("the animation \"{clip}\" (not from a running Puppet's Animation folder: the avatar's own, or Puppet isn't loaded)")),
+            // The avatar's default animation: it comes with the avatar
+            None if avatar_clips.contains(&clip) => {}
+            None => missing.push(format!("the animation \"{clip}\" (in no running Puppet's Animation folder, nor its avatar: is Puppet loaded?)")),
         }
     }
     if let Some(map) = settings.as_object_mut() {
@@ -696,7 +707,7 @@ end
         config.puppet = Some(serde_json::json!({ "action": "prefab", "glb": src.join("pie.glb").to_string_lossy() }));
         config.impact_reactions = Some(serde_json::json!({ "puppet_animation": { "enabled": true, "clip": "Knocked Out", "timing": "impact" } }));
         let out = root.join("Pie.red");
-        let report = export_with(&config, &out, &files).unwrap();
+        let report = export_with(&config, &out, &files, &[]).unwrap();
         assert!(report.missing.is_empty(), "{:?}", report.missing);
         let package = open(&out).unwrap();
         let mut paths: Vec<&str> = package.files.iter().map(|(p, _)| p.as_str()).collect();
@@ -723,13 +734,18 @@ end
         wave.name = "Wave".into();
         wave.redeem_type = "puppet".into();
         wave.puppet = Some(serde_json::json!({ "action": "animation", "mode": "once", "clip": "Wave" }));
-        let report = export_with(&wave, &root.join("Wave.red"), &files).unwrap();
+        let report = export_with(&wave, &root.join("Wave.red"), &files, &[]).unwrap();
         assert!(report.missing.is_empty());
         assert_eq!(open(&root.join("Wave.red")).unwrap().settings[ANIMATIONS_FIELD], serde_json::json!(["animations/Wave.dae"]));
-        wave.puppet = Some(serde_json::json!({ "action": "animation", "mode": "once", "clip": "Own Dance" }));
-        let report = export_with(&wave, &root.join("Own.red"), &files).unwrap();
+        // The avatar's default animation: part of the avatar, not missing; a clip nowhere: missing
+        wave.puppet = Some(serde_json::json!({ "action": "animation", "mode": "once", "clip": "Breathe" }));
+        let report = export_with(&wave, &root.join("Own.red"), &files, &["Breathe".to_string()]).unwrap();
+        assert!(report.missing.is_empty(), "{:?}", report.missing);
+        assert!(open(&root.join("Own.red")).unwrap().settings.get(ANIMATIONS_FIELD).is_none());
+        wave.puppet = Some(serde_json::json!({ "action": "animation", "mode": "once", "clip": "Gone Dance" }));
+        let report = export_with(&wave, &root.join("Gone.red"), &files, &["Breathe".to_string()]).unwrap();
         assert_eq!(report.missing.len(), 1);
-        assert!(report.missing[0].contains("Own Dance"));
+        assert!(report.missing[0].contains("Gone Dance"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
