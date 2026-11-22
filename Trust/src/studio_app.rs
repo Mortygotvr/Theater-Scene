@@ -3479,7 +3479,7 @@ impl StudioApp {
     fn install_redeem_package(&mut self, file: &std::path::Path, package: &crate::redeem_package::Package) {
         let name = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         match crate::redeem_package::install(package, &name) {
-            Ok(item) => {
+            Ok((item, notes)) => {
                 if let Some(script) = item.config.custom_redeem_script.as_ref().map(std::path::PathBuf::from) {
                     if script.is_file() && !self.custom_redeem_scripts_list.iter().any(|e| e.path == script) {
                         let name = script.file_stem().and_then(|s| s.to_str()).unwrap_or("Custom Script").to_string();
@@ -3492,6 +3492,12 @@ impl StudioApp {
                     file.file_name().unwrap_or_default().to_string_lossy(),
                     filename
                 );
+                for n in &notes {
+                    crate::obs_source::trust_log(&format!("[Import] {n}"));
+                }
+                if !notes.is_empty() {
+                    self.redeem_editor_status.push_str(&format!(" ({})", notes.join("; ")));
+                }
                 self.redeems_list.push(item);
                 self.redeems_list.sort_by(|a, b| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()));
                 self.selected_redeem_index = self.redeems_list.iter().position(|r| r.filename == filename);

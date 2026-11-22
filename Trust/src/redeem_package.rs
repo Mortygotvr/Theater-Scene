@@ -1,8 +1,10 @@
 //! Redeem packages (.red): a zip of a redeem's settings (redeem.json) and
-//! every file it needs — its custom script and the files that script names,
-//! images, sounds, the water texture, reaction scripts — so a redeem made on
-//! one PC works on another. Importing unpacks it into its own folder in
-//! redeems/, after lua_shield has checked its scripts.
+//! every file it needs — its custom script and the files that script names
+//! (Lua, Rhai, pictures, sounds…), images, sounds, the water texture,
+//! reaction scripts, a GLB prefab, and the Theater Puppet animations it plays
+//! — so a redeem made on one PC works on another from that one file.
+//! Importing unpacks it into its own folder in redeems/, after lua_shield has
+//! checked its scripts; its animations go to the Puppets' Animation folder.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,6 +25,13 @@ const ASSET_FIELDS: &[(&str, Option<&str>)] = &[
     ("contactSoundPath", Some("contactSound")),
     ("waterTexturePath", None),
 ];
+/// Where a package keeps the Puppet animations its redeem plays
+const ANIMATIONS: &str = "animations";
+/// The setting listing them (package paths), read back on import
+const ANIMATIONS_FIELD: &str = "theaterAnimations";
+/// Theater Puppet's procedure
+const PUPPET_PROC: &str = "theater_puppet_command";
+
 /// The most a package may unpack to (a zip can claim any size)
 const MAX_UNPACKED: u64 = 512 * 1024 * 1024;
 /// How far scripts naming scripts are followed
@@ -52,6 +61,48 @@ pub struct Package {
 /// same paths from it as from the Theater folder (see
 /// custom_lua::localize_paths); every other file at the root.
 pub fn export(config: &RedeemConfig, out: &Path) -> Result<ExportReport, String> {
+    let clips = animation_clips(&serde_json::to_value(config).map_err(|e| e.to_string())?);
+    let files = if clips.is_empty() { Vec::new() } else { puppet_animation_files() };
+    export_with(config, out, &files)
+}
+
+/// The Puppet animations a redeem plays: its 🎭 Puppet action's, and its
+/// impact reaction's
+fn animation_clips(settings: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let puppet = settings.get("puppet");
+    if puppet.and_then(|p| p.get("action")).and_then(|a| a.as_str()) == Some("animation")
+        && puppet.and_then(|p| p.get("mode")).and_then(|m| m.as_str()) != Some("stop")
+    {
+        out.extend(text(settings, &["puppet", "clip"]));
+    }
+    if settings.pointer("/impactReactions/puppet_animation/enabled").and_then(|e| e.as_bool()) == Some(true) {
+        out.extend(text(settings, &["impactReactions", "puppet_animation", "clip"]));
+    }
+    out.dedup();
+    out
+}
+
+/// What the Puppets running say: (clip, the file it came from) for their
+/// Animation folder's clips
+fn puppet_animation_files() -> Vec<(String, PathBuf)> {
+    puppets()
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|p| p.get("animation_files").and_then(|a| a.as_array()).cloned().unwrap_or_default())
+        .filter_map(|f| Some((f.get("clip")?.as_str()?.to_string(), PathBuf::from(f.get("file")?.as_str()?))))
+        .collect()
+}
+
+/// The Puppet sources (Puppet's `list`); None when Theater Puppet isn't loaded
+fn puppets() -> Option<Vec<serde_json::Value>> {
+    let out = crate::obs_procs::call_proc_json(PUPPET_PROC, r#"{"action":"list"}"#)?;
+    let v: serde_json::Value = serde_json::from_str(&out).ok()?;
+    Some(v.get("puppets").and_then(|p| p.as_array()).cloned().unwrap_or_default())
+}
+
+/// `export`, the Puppets' animation files given (clip, file)
+fn export_with(config: &RedeemConfig, out: &Path, animation_files: &[(String, PathBuf)]) -> Result<ExportReport, String> {
     let mut settings = serde_json::to_value(config).map_err(|e| e.to_string())?;
     let mut files = Files::default();
     let mut missing = Vec::new();
@@ -99,6 +150,45 @@ pub fn export(config: &RedeemConfig, out: &Path) -> Result<ExportReport, String>
                 set_text(&mut settings, &keys, at);
             }
             None => missing.push(raw),
+        }
+    }
+
+    // A GLB prefab: its GLB
+    if settings.pointer("/puppet/action").and_then(|a| a.as_str()) == Some("prefab") {
+        if let Some(raw) = text(&settings, &["puppet", "glb"]) {
+            match find_asset(&raw) {
+                Some(disk) => {
+                    let at = files.add_at_root(&disk);
+                    set_text(&mut settings, &["puppet", "glb"], at);
+                }
+                None => missing.push(raw),
+            }
+        }
+    }
+
+    // The Puppet animations it plays: their files (the Animation folder's)
+    let mut packed = Vec::new();
+    for clip in animation_clips(&settings) {
+        match animation_files.iter().find(|(c, f)| *c == clip && f.is_file()) {
+            Some((_, disk)) => {
+                let name = disk.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("{clip}.glb"));
+                let mut at = format!("{ANIMATIONS}/{name}");
+                let mut n = 2;
+                while files.has(&at) && !files.entries.iter().any(|(p, d)| *p == at && same_file(d, disk)) {
+                    at = format!("{ANIMATIONS}/{n}-{name}");
+                    n += 1;
+                }
+                files.add_at(&at, disk);
+                packed.push(serde_json::Value::String(at));
+            }
+            None => missing.push(format!("the animation \"{clip}\" (not from a running Puppet's Animation folder: the avatar's own, or Puppet isn't loaded)")),
+        }
+    }
+    if let Some(map) = settings.as_object_mut() {
+        if packed.is_empty() {
+            map.remove(ANIMATIONS_FIELD);
+        } else {
+            map.insert(ANIMATIONS_FIELD.to_string(), serde_json::Value::Array(packed));
         }
     }
 
@@ -165,15 +255,50 @@ pub fn open(path: &Path) -> Result<Package, String> {
     Ok(Package { settings, files, threats })
 }
 
-/// Adds `package` to the Studio's redeems, named after `name`.
-pub fn install(package: &Package, name: &str) -> Result<RedeemItem, String> {
-    install_into(package, name, &crate::studio_app::get_redeems_dir())
+/// Adds `package` to the Studio's redeems, named after `name`; its Puppet
+/// animations go to the Puppets' Animation folder (a Puppet without one gets
+/// Theater's `animations` folder). Returns the redeem and what to tell.
+pub fn install(package: &Package, name: &str) -> Result<(RedeemItem, Vec<String>), String> {
+    let has_animations = package.settings.get(ANIMATIONS_FIELD).and_then(|a| a.as_array()).is_some_and(|a| !a.is_empty());
+    let default = crate::paths::data_dir().join(ANIMATIONS);
+    let mut notes = Vec::new();
+    let (mut dests, mut point_at_default) = (Vec::new(), Vec::new());
+    if has_animations {
+        match puppets() {
+            None => {
+                dests.push(default.clone());
+                notes.push(format!("Theater Puppet isn't loaded: its animations are in {} (set it as Puppet's Animation folder)", default.display()));
+            }
+            Some(list) => {
+                for p in &list {
+                    let folder = p.get("animation_folder").and_then(|f| f.as_str()).unwrap_or("").trim().to_string();
+                    if folder.is_empty() {
+                        point_at_default.extend(p.get("source").and_then(|s| s.as_str()).map(str::to_string));
+                    } else if !dests.iter().any(|d: &PathBuf| same_file(d, Path::new(&folder))) {
+                        dests.push(PathBuf::from(folder));
+                    }
+                }
+                if dests.is_empty() || !point_at_default.is_empty() {
+                    dests.push(default.clone());
+                }
+            }
+        }
+    }
+    let (item, more) = install_into(package, name, &crate::studio_app::get_redeems_dir(), &dests)?;
+    notes.extend(more);
+    for source in point_at_default {
+        let args = serde_json::json!({ "action": "avatar_set", "source": source, "values": { "animation_folder": default.to_string_lossy() } });
+        let _ = crate::obs_procs::call_proc_json(PUPPET_PROC, &args.to_string());
+        notes.push(format!("{source}'s Animation folder is now {}", default.display()));
+    }
+    Ok((item, notes))
 }
 
 /// Unpacks `package` as a new redeem named after `name` (made unique): its
 /// files in `redeems/<name>/`, its settings in `redeems/<name>.json` pointing
-/// at them.
-fn install_into(package: &Package, name: &str, redeems: &Path) -> Result<RedeemItem, String> {
+/// at them; its Puppet animations copied into each of `animation_dirs` (a file
+/// of that name already there and different is kept: noted).
+fn install_into(package: &Package, name: &str, redeems: &Path, animation_dirs: &[PathBuf]) -> Result<(RedeemItem, Vec<String>), String> {
     std::fs::create_dir_all(redeems).map_err(|e| format!("Couldn't create {}: {}", redeems.display(), e))?;
     let stem = unique_stem(redeems, &file_stem_from(name));
     let folder = redeems.join(&stem);
@@ -199,6 +324,7 @@ fn install_into(package: &Package, name: &str, redeems: &Path) -> Result<RedeemI
         .chain(ASSET_FIELDS.iter().map(|(f, _)| *f))
         .map(|f| vec![f.to_string()])
         .collect();
+    fields.push(vec!["puppet".to_string(), "glb".to_string()]);
     if let Some(reactions) = settings.get("impactReactions").and_then(|r| r.as_object()) {
         fields.extend(reactions.keys().map(|r| vec!["impactReactions".to_string(), r.clone(), "path".to_string()]));
     }
@@ -207,6 +333,29 @@ fn install_into(package: &Package, name: &str, redeems: &Path) -> Result<RedeemI
         if let Some(full) = text(&settings, &keys).and_then(|raw| unpacked(&raw)) {
             set_text(&mut settings, &keys, full);
         }
+    }
+
+    // Its Puppet animations: where the Puppets look
+    let mut notes = Vec::new();
+    let wanted: Vec<String> = settings.get(ANIMATIONS_FIELD).and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    for at in wanted {
+        let Some((_, bytes)) = package.files.iter().find(|(p, _)| *p == at) else { continue };
+        let name = at.rsplit('/').next().unwrap_or(&at).to_string();
+        for dir in animation_dirs {
+            let dest = dir.join(&name);
+            match std::fs::read(&dest) {
+                Ok(have) if have == *bytes => {}
+                Ok(_) => notes.push(format!("{} is already there and different: kept yours", dest.display())),
+                Err(_) => {
+                    std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't create {}: {}", dir.display(), e))?;
+                    std::fs::write(&dest, bytes).map_err(|e| format!("Couldn't write {}: {}", dest.display(), e))?;
+                    notes.push(format!("Animation {name} added to {}", dir.display()));
+                }
+            }
+        }
+    }
+    if let Some(map) = settings.as_object_mut() {
+        map.remove(ANIMATIONS_FIELD);
     }
 
     let mut config: RedeemConfig = serde_json::from_value(settings).map_err(|e| e.to_string())?;
@@ -232,7 +381,7 @@ fn install_into(package: &Package, name: &str, redeems: &Path) -> Result<RedeemI
         is_dirty: false,
     };
     crate::studio_app::save_redeem_to_disk(&mut item)?;
-    Ok(item)
+    Ok((item, notes))
 }
 
 /// What goes in a package besides its settings: each file's path in the
@@ -508,7 +657,7 @@ end
         assert_eq!(threats, [("main.lua", "os.execute")]);
 
         let redeems = root.join("redeems");
-        let item = install_into(&package, "Glow", &redeems).unwrap();
+        let (item, _) = install_into(&package, "Glow", &redeems, &[]).unwrap();
         assert_eq!(item.filename, "Glow.json");
         assert!(redeems.join("Glow.json").is_file());
         let folder = redeems.join("Glow");
@@ -521,9 +670,66 @@ end
         assert!(item.config.image_src.as_deref().unwrap_or("").starts_with("data:image/png;base64,"));
 
         // A second import doesn't replace the first
-        let again = install_into(&package, "Glow", &redeems).unwrap();
+        let (again, _) = install_into(&package, "Glow", &redeems, &[]).unwrap();
         assert_eq!(again.filename, "Glow (2).json");
         assert!(redeems.join("Glow (2)").join("main.lua").is_file());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_puppet_redeem_brings_its_animations_and_prefab() {
+        let root = temp_dir("puppet");
+        let src = root.join("src");
+        write(&src.join("anims/Knocked Out.glb"), b"glTF knocked");
+        write(&src.join("anims/Wave.dae"), b"<COLLADA/>");
+        write(&src.join("pie.glb"), b"glTF pie");
+        let files = vec![
+            ("Knocked Out".to_string(), src.join("anims/Knocked Out.glb")),
+            ("Wave".to_string(), src.join("anims/Wave.dae")),
+        ];
+
+        // A prefab redeem whose reaction plays "Knocked Out"
+        let mut config = RedeemConfig::default();
+        config.name = "Pie".into();
+        config.redeem_type = "puppet".into();
+        config.puppet = Some(serde_json::json!({ "action": "prefab", "glb": src.join("pie.glb").to_string_lossy() }));
+        config.impact_reactions = Some(serde_json::json!({ "puppet_animation": { "enabled": true, "clip": "Knocked Out", "timing": "impact" } }));
+        let out = root.join("Pie.red");
+        let report = export_with(&config, &out, &files).unwrap();
+        assert!(report.missing.is_empty(), "{:?}", report.missing);
+        let package = open(&out).unwrap();
+        let mut paths: Vec<&str> = package.files.iter().map(|(p, _)| p.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["animations/Knocked Out.glb", "pie.glb"]);
+        assert_eq!(package.settings["puppet"]["glb"], "pie.glb");
+
+        // Imported: the prefab points at its unpacked GLB, the animation lands
+        // in each Animation folder (one already has it, one has another file by that name)
+        let (a, b, c) = (root.join("folderA"), root.join("folderB"), root.join("folderC"));
+        write(&b.join("Knocked Out.glb"), b"glTF knocked");
+        write(&c.join("Knocked Out.glb"), b"someone else's");
+        let (item, notes) = install_into(&package, "Pie", &root.join("redeems"), &[a.clone(), b.clone(), c.clone()]).unwrap();
+        println!("{notes:?}");
+        let glb = item.config.puppet.as_ref().unwrap()["glb"].as_str().unwrap().to_string();
+        assert!(Path::new(&glb).is_file() && glb.ends_with("pie.glb"), "{glb}");
+        assert_eq!(std::fs::read(a.join("Knocked Out.glb")).unwrap(), b"glTF knocked");
+        assert_eq!(std::fs::read(c.join("Knocked Out.glb")).unwrap(), b"someone else's", "another file of that name was replaced");
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(item.config.extra.get(ANIMATIONS_FIELD).is_none());
+
+        // A Puppet action playing "Wave" (a DAE); one playing the avatar's own clip: noted missing
+        let mut wave = RedeemConfig::default();
+        wave.name = "Wave".into();
+        wave.redeem_type = "puppet".into();
+        wave.puppet = Some(serde_json::json!({ "action": "animation", "mode": "once", "clip": "Wave" }));
+        let report = export_with(&wave, &root.join("Wave.red"), &files).unwrap();
+        assert!(report.missing.is_empty());
+        assert_eq!(open(&root.join("Wave.red")).unwrap().settings[ANIMATIONS_FIELD], serde_json::json!(["animations/Wave.dae"]));
+        wave.puppet = Some(serde_json::json!({ "action": "animation", "mode": "once", "clip": "Own Dance" }));
+        let report = export_with(&wave, &root.join("Own.red"), &files).unwrap();
+        assert_eq!(report.missing.len(), 1);
+        assert!(report.missing[0].contains("Own Dance"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
