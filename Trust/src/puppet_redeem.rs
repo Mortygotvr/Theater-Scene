@@ -593,7 +593,14 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                 }
                 None => {}
             }
-            ui.label(egui::RichText::new("Where, from the avatar's feet (metres): its right as seen, up, toward the camera").small());
+            // An armature with the avatar's bones (Hips, Spine…): it can follow the avatar's pose
+            let mut follow = cmd.get("follow").and_then(|v| v.as_bool()).unwrap_or(true);
+            if ui.checkbox(&mut follow, "🦴 Follow the avatar's armature").on_hover_text("When the GLB's armature has the avatar's bones (Theater Rig's names: Hips, Spine…), each bone moves with the avatar's, its shape keys too, and its own animation plays over that, lined up with the avatar. A GLB without them is placed below.").changed() {
+                cmd["follow"] = json!(follow);
+                changed = true;
+            }
+            let where_ = if follow { "Where, when it doesn't follow (no avatar bones): from the avatar's feet (metres), its right as seen, up, toward the camera" } else { "Where, from the avatar's feet (metres): its right as seen, up, toward the camera" };
+            ui.label(egui::RichText::new(where_).small());
             changed |= slider(ui, "Right (-) / left (+)", cmd, "x", -3.0..=3.0, 0.0, " m");
             changed |= slider(ui, "Down (-) / up (+)", cmd, "y", -1.0..=3.0, 0.0, " m");
             changed |= slider(ui, "Back (-) / forward (+)", cmd, "z", -3.0..=3.0, 0.0, " m");
