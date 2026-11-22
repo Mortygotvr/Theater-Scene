@@ -409,6 +409,11 @@ fn register_actions(engine: &mut Engine) {
         engine.register_fn(name, move |source: &str| source_visibility("", source, action));
     }
     engine.register_fn("open_studio", crate::studio_app::launch_studio_native);
+    // A file picked in Windows' Open dialog ("" when none): its title, and its
+    // filter as the Studio's ("Animations (*.dae, *.glb) | *.dae *.glb")
+    engine.register_fn("pick_file", |title: &str, filter: &str| -> String {
+        crate::studio_app::pick_file_dialog(title, filter).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    });
     engine.register_fn("call_proc", |name: &str, args: Map| call_proc(name, &rhai::format_map_as_json(&args)));
     engine.register_fn("call_proc", |name: &str| call_proc(name, "{}"));
 }
