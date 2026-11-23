@@ -1503,9 +1503,88 @@ pub fn delete_redeem_file(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Where a source is: place, size, turn
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Placed {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    roll: f32,
+    pitch: f32,
+    yaw: f32,
+}
+
+impl Placed {
+    fn of(s: &crate::StudioSource) -> Placed {
+        Placed { x: s.x, y: s.y, w: s.width, h: s.height, roll: s.roll, pitch: s.pitch, yaw: s.yaw }
+    }
+
+    fn put(self, s: &mut crate::StudioSource) {
+        (s.x, s.y, s.width, s.height, s.roll, s.pitch, s.yaw) = (self.x, self.y, self.w, self.h, self.roll, self.pitch, self.yaw);
+    }
+}
+
+/// One undo step: a source from `before` to `after`
+#[derive(Clone, Debug)]
+struct TransformEdit {
+    name: String,
+    before: Placed,
+    after: Placed,
+}
+
+/// The most undo steps kept
+const UNDO_STEPS: usize = 200;
+
+/// The gizmo's handles, in screen pixels from its centre: the white dot, the
+/// blue (roll) ring, the white (scale) ring, how far the red (yaw) and green
+/// (pitch) bars go (short of the blue ring: their ends don't meet it), and
+/// how near a handle the pointer must be
+const GIZMO_DOT: f32 = 11.0;
+const GIZMO_RING: f32 = 34.0;
+const GIZMO_SCALE: f32 = 48.0;
+const GIZMO_BAR: f32 = 26.0;
+const GIZMO_REACH: f32 = 8.0;
+
+/// The gizmo's handle at (`dx`, `dy`) from its centre (screen pixels), the
+/// source turned `roll` and drawn `sw`×`sh`: the nearest one within reach of
+/// where it's drawn; Ctrl inside the source elsewhere: move; else none
+fn gizmo_handle(dx: f32, dy: f32, roll: f32, sw: f32, sh: f32, ctrl: bool) -> GizmoDragMode {
+    let dist = dx.hypot(dy);
+    if dist <= GIZMO_DOT + 3.0 {
+        return GizmoDragMode::PanFree;
+    }
+    let rad = (-roll).to_radians();
+    let (c, s) = (rad.cos(), rad.sin());
+    let lx = dx * c - dy * s;
+    let ly = dx * s + dy * c;
+    // How far from a bar `along` one way, `across` the other
+    let bar = |along: f32, across: f32| if along.abs() <= GIZMO_BAR { across.abs() } else { (along.abs() - GIZMO_BAR).hypot(across) };
+    let near = [
+        (GizmoDragMode::RotateRoll, (dist - GIZMO_RING).abs()),
+        (GizmoDragMode::Scale, (dist - GIZMO_SCALE).abs()),
+        (GizmoDragMode::RotateYaw, bar(lx, ly)),
+        (GizmoDragMode::RotatePitch, bar(ly, lx)),
+    ]
+    .into_iter()
+    .min_by(|a, b| a.1.total_cmp(&b.1));
+    match near {
+        Some((mode, d)) if d <= GIZMO_REACH => mode,
+        _ if ctrl && lx.abs() <= sw / 2.0 && ly.abs() <= sh / 2.0 => GizmoDragMode::PanFree,
+        _ => GizmoDragMode::None,
+    }
+}
+
 pub struct StudioApp {
     selected_source_name: String,
     drag_mode: GizmoDragMode,
+    /// Sources moved, scaled or turned (gizmo, the fields, Reset): Ctrl+Z
+    /// undoes, Ctrl+Shift+Z (or Ctrl+Y) redoes
+    undo: Vec<TransformEdit>,
+    redo: Vec<TransformEdit>,
+    /// The edit going on (a drag, typing in a field): the source and how it
+    /// was before; one undo step once it's done
+    editing: Option<(String, Placed)>,
     drag_start_pointer: Pos2,
     drag_start_x: f32,
     drag_start_y: f32,
@@ -3324,6 +3403,9 @@ impl StudioApp {
         Self {
             selected_source_name: initial_selected,
             drag_mode: GizmoDragMode::None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            editing: None,
             drag_start_pointer: Pos2::ZERO,
             drag_start_x: 0.0,
             drag_start_y: 0.0,
@@ -3745,6 +3827,27 @@ impl eframe::App for StudioApp {
         // Tick active smooth transitions for scene coordinate sets
         tick_active_transition(ctx, &mut sources, &mut sources_modified);
 
+        // Ctrl+Z: the last move / scale / turn undone; Ctrl+Shift+Z or Ctrl+Y: redone
+        if self.active_tab == StudioActiveTab::SceneStudio && self.editing.is_none() && !ctx.wants_keyboard_input() {
+            let redo = ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }, egui::Key::Z) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+            });
+            let undo = !redo && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z));
+            let step = if redo { self.redo.pop() } else if undo { self.undo.pop() } else { None };
+            if let Some(edit) = step {
+                if let Some(src) = sources.iter_mut().find(|s| s.name == edit.name) {
+                    (if redo { edit.after } else { edit.before }).put(src);
+                    self.selected_source_name = edit.name.clone();
+                    *state.studio_selected_source.write() = edit.name.clone();
+                    sources_modified = true;
+                    save_requested = true;
+                    self.status_msg = format!("{} '{}'", if redo { "↷ Redid" } else { "↶ Undid" }, edit.name);
+                    ctx.request_repaint();
+                }
+                if redo { self.undo.push(edit) } else { self.redo.push(edit) }
+            }
+        }
+
         // Drain any unconsumed channel events to prevent backlog
         if let Some(rx) = &self.event_rx {
             while let Ok(_) = rx.try_recv() {}
@@ -3976,6 +4079,8 @@ impl eframe::App for StudioApp {
                     ui.separator();
                     
                     if let Some(src) = sources.iter_mut().find(|s| s.name == self.selected_source_name) {
+                        // How it was before the fields or Reset below (an undo step)
+                        let placed_before = Placed::of(src);
                         let current_scene = state.studio_scene_name.read().clone();
                         ui.horizontal(|ui| {
                             ui.heading(format!("⚙️ {}", self.selected_source_name));
@@ -4064,6 +4169,9 @@ impl eframe::App for StudioApp {
                             save_requested = true;
                             self.status_msg = format!("Reset '{}' to OBS transform", src.name);
                             ctx.request_repaint();
+                        }
+                        if self.editing.is_none() && Placed::of(src) != placed_before {
+                            self.editing = Some((src.name.clone(), placed_before));
                         }
                     }
                 }
@@ -4611,7 +4719,7 @@ impl eframe::App for StudioApp {
                     ui.separator();
 
                     ui.label(
-                        egui::RichText::new("Gizmo: ⚪ Move  ⭕ Scale  🔵 Roll  🔴 Yaw  🟢 Pitch")
+                        egui::RichText::new("Gizmo: ⚪ Move  ⭕ Scale  🔵 Roll  🔴 Yaw  🟢 Pitch   ·   Ctrl+Z undo, Ctrl+Shift+Z redo")
                             .size(11.0)
                             .color(Color32::from_rgb(100, 116, 139)),
                     );
@@ -4950,61 +5058,32 @@ impl eframe::App for StudioApp {
                 let r_blue = 34.0;
                 let r_scale = 48.0;
 
+                // The handle under the pointer (lit, its cursor) and the one dragged
+                let hovered = match pointer_pos {
+                    Some(p) if self.drag_mode == GizmoDragMode::None && !is_throwable_inactive => gizmo_handle(p.x - scx, p.y - scy, src.roll, sw, sh, is_ctrl),
+                    _ => self.drag_mode,
+                };
+                match hovered {
+                    GizmoDragMode::None => {}
+                    GizmoDragMode::PanFree | GizmoDragMode::Move => ctx.set_cursor_icon(egui::CursorIcon::Move),
+                    GizmoDragMode::Scale => ctx.set_cursor_icon(egui::CursorIcon::ResizeNwSe),
+                    GizmoDragMode::RotateYaw => ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal),
+                    GizmoDragMode::RotatePitch => ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical),
+                    _ => ctx.set_cursor_icon(egui::CursorIcon::Grab),
+                }
+
                 // Handle Gizmo Mouse Interaction
                 if response.drag_started() {
-                    if let Some(p) = pointer_pos {
-                        let dx = p.x - scx;
-                        let dy = p.y - scy;
-                        let dist = (dx * dx + dy * dy).sqrt();
-
-                        let rad = (-src.roll).to_radians();
-                        let cos_a = rad.cos();
-                        let sin_a = rad.sin();
-                        let lx = dx * cos_a - dy * sin_a;
-                        let ly = dx * sin_a + dy * cos_a;
-
-                        // 1. White Center Spot (r <= 12) -> PanFree
-                        if dist <= 12.0 {
-                            self.drag_mode = GizmoDragMode::PanFree;
-                        // 2. White Scale Ring (r = 48) -> Scale (generous zone directly on/around white ring)
-                        } else if dist >= 41.0 && dist <= 58.0 {
-                            self.drag_mode = GizmoDragMode::Scale;
-                        // 3. Rotation: Blue Roll Ring & Thick '+' Axis Bars (Red = Yaw, Green = Pitch)
-                        } else {
-                            let d_blue = (dist - r_blue).abs();
-
-                            // Distance to Red horizontal bar (Yaw: local y = 0, x in [-r_blue, r_blue])
-                            let d_red = if lx.abs() <= r_blue {
-                                ly.abs()
-                            } else {
-                                ((lx.abs() - r_blue).powi(2) + ly.powi(2)).sqrt()
-                            };
-
-                            // Distance to Green vertical bar (Pitch: local x = 0, y in [-r_blue, r_blue])
-                            let d_green = if ly.abs() <= r_blue {
-                                lx.abs()
-                            } else {
-                                (lx.powi(2) + (ly.abs() - r_blue).powi(2)).sqrt()
-                            };
-
-                            let min_d = d_blue.min(d_red).min(d_green);
-                            if min_d <= 7.5 {
-                                if (d_red - min_d).abs() < 1e-3 {
-                                    self.drag_mode = GizmoDragMode::RotateYaw;
-                                } else if (d_green - min_d).abs() < 1e-3 {
-                                    self.drag_mode = GizmoDragMode::RotatePitch;
-                                } else {
-                                    self.drag_mode = GizmoDragMode::RotateRoll;
-                                }
-                            } else if is_ctrl && lx.abs() <= sw / 2.0 && ly.abs() <= sh / 2.0 {
-                                // Blender Ctrl + Click: Move anywhere inside target
-                                self.drag_mode = GizmoDragMode::PanFree;
-                            } else {
-                                self.drag_mode = GizmoDragMode::None;
-                            }
-                        }
+                    // Where the button went down (egui starts a drag only once
+                    // the pointer has moved a little: the handle there, not here)
+                    if let Some(p) = ctx.input(|i| i.pointer.press_origin()).or(pointer_pos) {
+                        self.drag_mode = gizmo_handle(p.x - scx, p.y - scy, src.roll, sw, sh, is_ctrl);
 
                         if self.drag_mode != GizmoDragMode::None {
+                            // An undo step begins (done when the button is let go)
+                            if self.editing.is_none() {
+                                self.editing = Some((src.name.clone(), Placed::of(src)));
+                            }
                             self.drag_start_pointer = p;
                             self.drag_start_x = src.x;
                             self.drag_start_y = src.y;
@@ -5157,6 +5236,16 @@ impl eframe::App for StudioApp {
                 let stroke_red = Stroke::new(6.0, Color32::from_rgb(239, 68, 68));       // Thick Red = Yaw (horizontal bar)
                 let stroke_green = Stroke::new(6.0, Color32::from_rgb(34, 197, 94));     // Thick Green = Pitch (vertical bar)
 
+                // The handle under the pointer (or dragged): thicker and lighter
+                let lit = |mode: GizmoDragMode, st: Stroke| {
+                    if hovered == mode {
+                        Stroke::new(st.width + 3.0, st.color.lerp_to_gamma(Color32::WHITE, 0.45))
+                    } else {
+                        st
+                    }
+                };
+                let (stroke_white, stroke_blue, stroke_red, stroke_green) = (lit(GizmoDragMode::Scale, stroke_white), lit(GizmoDragMode::RotateRoll, stroke_blue), lit(GizmoDragMode::RotateYaw, stroke_red), lit(GizmoDragMode::RotatePitch, stroke_green));
+
                 // 1. White Outer Scale Ring (r = 48)
                 painter.circle_stroke(center_pos, r_scale, stroke_white);
 
@@ -5168,19 +5257,20 @@ impl eframe::App for StudioApp {
                 let cos_t = rad.cos();
                 let sin_t = rad.sin();
 
-                // Red Horizontal Axis Bar (Yaw: from -r_blue to +r_blue)
-                let p_red_left = Pos2::new(scx - r_blue * cos_t, scy - r_blue * sin_t);
-                let p_red_right = Pos2::new(scx + r_blue * cos_t, scy + r_blue * sin_t);
+                // Red Horizontal Axis Bar (Yaw), short of the blue ring
+                let p_red_left = Pos2::new(scx - GIZMO_BAR * cos_t, scy - GIZMO_BAR * sin_t);
+                let p_red_right = Pos2::new(scx + GIZMO_BAR * cos_t, scy + GIZMO_BAR * sin_t);
                 painter.line_segment([p_red_left, p_red_right], stroke_red);
 
                 // Green Vertical Axis Bar (Pitch: perpendicular across blue ring)
-                let p_green_top = Pos2::new(scx + r_blue * sin_t, scy - r_blue * cos_t);
-                let p_green_bot = Pos2::new(scx - r_blue * sin_t, scy + r_blue * cos_t);
+                let p_green_top = Pos2::new(scx + GIZMO_BAR * sin_t, scy - GIZMO_BAR * cos_t);
+                let p_green_bot = Pos2::new(scx - GIZMO_BAR * sin_t, scy + GIZMO_BAR * cos_t);
                 painter.line_segment([p_green_top, p_green_bot], stroke_green);
 
                 // 5. White Center Spot (r = 11) for PanFree
-                painter.circle_filled(center_pos, 11.0, Color32::WHITE);
-                painter.circle_stroke(center_pos, 11.0, Stroke::new(2.0, Color32::from_rgb(15, 23, 42)));
+                let dot = if hovered == GizmoDragMode::PanFree { GIZMO_DOT + 3.0 } else { GIZMO_DOT };
+                painter.circle_filled(center_pos, dot, Color32::WHITE);
+                painter.circle_stroke(center_pos, dot, Stroke::new(2.0, Color32::from_rgb(15, 23, 42)));
             }
 
             if is_throwable_inactive {
@@ -5303,6 +5393,20 @@ impl eframe::App for StudioApp {
             }
             StudioActiveTab::Settings => {
                 self.render_settings_tab(ctx);
+            }
+        }
+        // An edit done (the button let go, no field being typed in): one undo step
+        if self.editing.is_some() && !ctx.input(|i| i.pointer.any_down()) && !ctx.wants_keyboard_input() {
+            if let Some((name, before)) = self.editing.take() {
+                if let Some(after) = sources.iter().find(|s| s.name == name).map(Placed::of) {
+                    if after != before {
+                        self.undo.push(TransformEdit { name, before, after });
+                        if self.undo.len() > UNDO_STEPS {
+                            self.undo.remove(0);
+                        }
+                        self.redo.clear();
+                    }
+                }
             }
         }
         if save_requested {
@@ -7791,6 +7895,26 @@ pub fn dispatch_test_redeem_json(json_str: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each handle where it's drawn, the nearest one winning, turned with the
+    /// source; elsewhere in the source: nothing, or move with Ctrl
+    #[test]
+    fn gizmo_handles_are_where_they_are_drawn() {
+        use GizmoDragMode::*;
+        let at = |dx: f32, dy: f32, roll: f32, ctrl: bool| gizmo_handle(dx, dy, roll, 400.0, 400.0, ctrl);
+        assert_eq!(at(3.0, -4.0, 0.0, false), PanFree, "the white dot");
+        assert_eq!(at(0.0, -34.0, 0.0, false), RotateRoll, "the blue ring, top");
+        assert_eq!(at(24.0, 24.0, 0.0, false), RotateRoll, "the blue ring, between the bars");
+        assert_eq!(at(-48.0, 0.0, 0.0, false), Scale, "the white ring");
+        assert_eq!(at(0.0, 54.0, 0.0, false), Scale, "near the white ring");
+        assert_eq!(at(20.0, 2.0, 0.0, false), RotateYaw, "the red bar");
+        assert_eq!(at(-2.0, -20.0, 0.0, false), RotatePitch, "the green bar");
+        assert_eq!(at(30.5, 0.0, 0.0, false), RotateRoll, "past the red bar's end: nearer the ring");
+        assert_eq!(at(0.0, 20.0, 90.0, false), RotateYaw, "turned a quarter: the red bar is upright");
+        assert_eq!(at(100.0, 80.0, 0.0, false), None, "in the source, no handle");
+        assert_eq!(at(100.0, 80.0, 0.0, true), PanFree, "Ctrl: move from anywhere in it");
+        assert_eq!(at(300.0, 0.0, 0.0, true), None, "outside it");
+    }
 
     /// Taken by the tests that apply poses: which pose was applied last
     /// (LAST_APPLIED_POSE) and the active transition are global, so those tests
