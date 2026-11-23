@@ -6,10 +6,10 @@
 //! timer: then Puppet puts back what it changed.
 //!
 //! A GLB prefab ("prefab"): Puppet spawns a GLB that plays one of its
-//! animations once (baked in Blender, no physics) and goes. Its contact
-//! frames (Blender markers named "contact", which Theater Rig exports) run
-//! the redeem's contact section, as a throwable's impact does: its Impact
-//! Audio, and its Screen Shake and Impact Reaction set to On Contact.
+//! animations once (baked in Blender, no physics) and goes. Its impact
+//! frames (Blender markers named "impact", which Theater Rig exports; the
+//! file calls them contacts) are its impacts, as a throwable's hit: its
+//! Impact Audio, and its Screen Shake and Impact Reaction set to On Impact.
 //!
 //! The redeem keeps the command as its `puppet` setting (the procedure's own
 //! JSON); its text settings take the redeem's wildcards ({1}, {2}…) when it
@@ -287,7 +287,7 @@ fn prefab_effects(val: &Value, plan: &Value) {
             if let Some(r) = &on_contact {
                 crate::physics::fire_impact_reaction(r, &target, cx, cy);
             }
-            crate::obs_source::trust_log(&format!("[Puppet redeem] 💥 Prefab contact at {t:.2} s"));
+            crate::obs_source::trust_log(&format!("[Puppet redeem] 💥 Prefab impact at {t:.2} s"));
         }
     });
 }
@@ -801,8 +801,8 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
                 Some(c) => {
                     let shown = if wanted.is_empty() { c.first() } else { c.iter().find(|(n, _, _)| *n == wanted) };
                     let line = match shown {
-                        Some((n, d, k)) if *k > 0 => format!("{n}: {d:.2} s, {k} contact frame(s): the contact section (below) runs at each."),
-                        Some((n, d, _)) => format!("{n}: {d:.2} s, no contact frame (in Blender: timeline markers named \"contact\", exported with Theater Rig enabled)."),
+                        Some((n, d, k)) if *k > 0 => format!("{n}: {d:.2} s, {k} impact frame(s): the Impact settings (below) run at each."),
+                        Some((n, d, _)) => format!("{n}: {d:.2} s, no impact frame (in Blender: timeline markers named \"impact\", exported with Theater Rig enabled)."),
                         None if wanted == "random" => format!("One of its {} animations, picked each time.", c.len()),
                         None => "No animation of that name in this GLB.".to_string(),
                     };
@@ -826,7 +826,7 @@ pub fn editor_ui(ui: &mut egui::Ui, setting: &mut Option<Value>) -> bool {
             if clips.as_ref().is_some_and(|c| c.is_empty()) {
                 changed |= slider(ui, "Shows for (no animation)", cmd, "hold", 0.5..=60.0, 3.0, " s");
             }
-            ui.label(egui::RichText::new("Contact section: the Impact Audio, and the Screen Shake and Impact Reaction set to On Contact (Audio & Screen Shake, Impact Reactions below).").small().italics().color(egui::Color32::from_rgb(148, 163, 184)));
+            ui.label(egui::RichText::new("At each impact frame: the Impact Audio, and the Screen Shake and Impact Reaction set to On Impact (Audio & Screen Shake, Impact Reactions below).").small().italics().color(egui::Color32::from_rgb(148, 163, 184)));
         }
         _ => {}
     }

@@ -6787,11 +6787,11 @@ impl StudioApp {
                                         });
 
                                         let is_throwable = item.config.redeem_type == "image" || item.config.redeem_type == "throwable";
-                                        // A GLB prefab's contact frames are its contacts
+                                        // A GLB prefab's impact frames are its impacts
                                         let is_prefab = item.config.redeem_type == "puppet" && crate::puppet_redeem::is_prefab(item.config.puppet.as_ref());
                                         if is_throwable || is_prefab {
                                             ui.horizontal(|ui| {
-                                                ui.label(if is_prefab { "💥 Contact Audio:" } else { "💥 Impact Audio:" });
+                                                ui.label("💥 Impact Audio:");
                                                 let mut path_str = item.config.collision_sound_path.clone().unwrap_or_default();
                                                 if ui.add(
                                                     egui::TextEdit::singleline(&mut path_str)
@@ -6851,15 +6851,15 @@ impl StudioApp {
                                             ui.horizontal(|ui| {
                                                 ui.label("⏰ Shake Timing:");
                                                 egui::ComboBox::from_id_salt("shake_timing_combo")
-                                                    .selected_text(if timing == "start" { "On Start" } else { "On Contact" })
+                                                    .selected_text(if timing == "start" { "On Start" } else { "On Impact" })
                                                     .show_ui(ui, |ui| {
                                                         if supports_impact {
                                                             let label = if is_flamethrower {
-                                                                "On Contact (stream reaches target)"
+                                                                "On Impact (stream reaches target)"
                                                             } else if is_prefab {
-                                                                "On Contact (each of the GLB's contact frames)"
+                                                                "On Impact (each of the GLB's impact frames)"
                                                             } else {
-                                                                "On Contact (throwable hits target)"
+                                                                "On Impact (throwable hits target)"
                                                             };
                                                             if ui.selectable_label(timing == "impact", label).clicked() {
                                                                 item.config.set_shake_timing("impact"); item.is_dirty = true;
@@ -6971,15 +6971,15 @@ impl StudioApp {
                                             ui.horizontal(|ui| {
                                                 ui.label("⏰ Reaction Timing:");
                                                 egui::ComboBox::from_id_salt("reaction_timing_combo")
-                                                    .selected_text(if timing == "start" { "On Start" } else { "On Contact" })
+                                                    .selected_text(if timing == "start" { "On Start" } else { "On Impact" })
                                                     .show_ui(ui, |ui| {
                                                         if supports_impact {
                                                             let label = if is_flamethrower {
-                                                                "On Contact (stream reaches target)"
+                                                                "On Impact (stream reaches target)"
                                                             } else if is_prefab {
-                                                                "On Contact (each of the GLB's contact frames)"
+                                                                "On Impact (each of the GLB's impact frames)"
                                                             } else {
-                                                                "On Contact (throwable hits target)"
+                                                                "On Impact (throwable hits target)"
                                                             };
                                                             if ui.selectable_label(timing == "impact", label).clicked() {
                                                                 item.config.set_reaction_timing("impact"); item.is_dirty = true;
@@ -7078,9 +7078,9 @@ impl StudioApp {
                                             ui.horizontal(|ui| {
                                                 ui.label("⏰ Plays:");
                                                 egui::ComboBox::from_id_salt("puppet_animation_timing")
-                                                    .selected_text(if timing == "start" { "On Start" } else { "On Contact" })
+                                                    .selected_text(if timing == "start" { "On Start" } else { "On Impact" })
                                                     .show_ui(ui, |ui| {
-                                                        if can_contact && ui.selectable_label(timing == "impact", "On Contact").clicked() {
+                                                        if can_contact && ui.selectable_label(timing == "impact", "On Impact").clicked() {
                                                             timing = "impact".to_string();
                                                             changed = true;
                                                         }
