@@ -3168,6 +3168,7 @@ pub fn read_disk_targets() -> Vec<crate::StudioSource> {
                     let default_width = def_xf.and_then(|c| c.get("width")).and_then(|v| v.as_f64()).unwrap_or(width as f64) as f32;
                     let default_height = def_xf.and_then(|c| c.get("height")).and_then(|v| v.as_f64()).unwrap_or(height as f64) as f32;
                     let default_roll = def_xf.and_then(|c| c.get("roll")).and_then(|v| v.as_f64()).unwrap_or(roll as f64) as f32;
+                    let mask_alpha = item.get("mask_alpha").and_then(|v| v.as_u64()).map(|a| a.min(255) as u8);
 
                     loaded_sources.push(crate::StudioSource {
                         scene,
@@ -3189,6 +3190,7 @@ pub fn read_disk_targets() -> Vec<crate::StudioSource> {
                         default_width,
                         default_height,
                         default_roll,
+                        mask_alpha,
                     });
                 }
                 println!("[Trust Studio] 📥 Loaded {} target sources and {} coordinate sets from '{}'", loaded_sources.len(), loaded_sets.len(), path.display());
@@ -3276,7 +3278,7 @@ pub fn load_studio_targets_from_disk() -> usize {
                         let w = rgba.width();
                         let h = rgba.height();
                         let raw = rgba.into_raw();
-                        let config = *state.config.read();
+                        let config = src.mask_config(&state.config.read());
                         let transform = crate::types::SourceTransform {
                             pos_x: src.x,
                             pos_y: src.y,
@@ -4117,6 +4119,27 @@ impl eframe::App for StudioApp {
                             }
                         });
                         if src.is_target {
+                            // Its own mask threshold (a glass picture: the walls alone collide)
+                            ui.horizontal(|ui| {
+                                let mut own = src.mask_alpha.is_some();
+                                if ui.checkbox(&mut own, "Own mask threshold").on_hover_text("Only its pixels at least this opaque collide (alpha 0–255). For Theater Rig's glass picture: 180, its walls alone").changed() {
+                                    src.mask_alpha = if own { Some(180) } else { None };
+                                    sources_modified = true;
+                                    save_requested = true;
+                                }
+                                if let Some(a) = src.mask_alpha.as_mut() {
+                                    let r = ui.add(egui::DragValue::new(a).range(1..=255));
+                                    if r.changed() {
+                                        sources_modified = true;
+                                    }
+                                    // Saved once it's set (the drag let go, the value typed)
+                                    if r.drag_stopped() || r.lost_focus() {
+                                        save_requested = true;
+                                    }
+                                } else {
+                                    ui.label(egui::RichText::new(format!("(Settings: {})", state.config.read().alpha_threshold)).small().color(Color32::from_rgb(148, 163, 184)));
+                                }
+                            });
                             // How targets' outlines are scanned: in the Settings tab (all targets)
                             ui.horizontal(|ui| {
                                 if ui.button("🎭 Mask settings…").on_hover_text("How finely, how often and by what targets' outlines are found (Settings tab)").clicked() {
@@ -5337,7 +5360,7 @@ impl eframe::App for StudioApp {
                 let textures = state.target_textures.read();
                 if let Some(tex) = textures.get(&src.name) {
                     if tex.width > 0 && tex.height > 0 && !tex.rgba.is_empty() {
-                        let config = *state.config.read();
+                        let config = src.mask_config(&state.config.read());
                         let transform = crate::types::SourceTransform {
                             pos_x: src.x,
                             pos_y: src.y,
@@ -5488,6 +5511,11 @@ pub fn save_targets_to_disk(sources: &[crate::StudioSource]) -> usize {
         obj.insert("target".to_string(), serde_json::Value::Bool(src.is_target));
         obj.insert("match_obs".to_string(), serde_json::Value::Bool(src.match_obs));
         obj.insert("visible".to_string(), serde_json::Value::Bool(src.is_visible));
+        // Its own mask threshold (none: the Settings' one)
+        match src.mask_alpha {
+            Some(a) => { obj.insert("mask_alpha".to_string(), serde_json::json!(a)); }
+            None => { obj.remove("mask_alpha"); }
+        }
         if !src.file_path.is_empty() {
             obj.insert("file_path".to_string(), serde_json::Value::String(src.file_path.clone()));
         }
@@ -7896,6 +7924,35 @@ pub fn dispatch_test_redeem_json(json_str: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// A glass picture (Theater Rig's): walls alpha 220, glass body 150. The
+    /// Settings' threshold (10): all of it solid; its own threshold of 180:
+    /// the walls alone (the liquid goes in)
+    #[test]
+    fn a_targets_own_mask_threshold_keeps_the_walls_alone() {
+        let (w, h) = (20u32, 20u32);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let wall = x < 2 || x >= w - 2 || y >= h - 2;
+                px[((y * w + x) * 4 + 3) as usize] = if wall { 220 } else { 150 };
+            }
+        }
+        let t = crate::types::SourceTransform { scale_x: 1.0, scale_y: 1.0, ..Default::default() };
+        let settings = crate::types::TrackingConfig::default();
+        let mut src = crate::StudioSource {
+            scene: String::new(), name: "Jar".into(), slot: 0, x: 0.0, y: 0.0, width: 20.0, height: 20.0,
+            roll: 0.0, pitch: 0.0, yaw: 0.0, is_target: true, match_obs: false, is_visible: true, file_path: String::new(),
+            default_x: 0.0, default_y: 0.0, default_width: 20.0, default_height: 20.0, default_roll: 0.0, mask_alpha: None,
+        };
+        let solid = |src: &crate::StudioSource| {
+            let (_, mask, _) = crate::tracker::scan_rgba_with_3d_transform(&px, w, h, w * 4, &t, 0.0, 0.0, &src.mask_config(&settings));
+            (mask.is_solid_local(10, 10), mask.is_solid_local(0, 10), mask.is_solid_local(10, 19))
+        };
+        assert_eq!(solid(&src), (true, true, true), "the Settings' threshold: the glass body solid too");
+        src.mask_alpha = Some(180);
+        assert_eq!(solid(&src), (false, true, true), "its own: the inside free, the walls and bottom solid");
+    }
+
     /// Each handle where it's drawn, the nearest one winning, turned with the
     /// source; elsewhere in the source: nothing, or move with Ctrl
     #[test]
@@ -7953,7 +8010,7 @@ mod tests {
                 scene: String::new(), name: "Test Placeholder".to_string(), slot: 0,
                 x: 0.0, y: 0.0, width: 100.0, height: 100.0, roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: false, match_obs: false, is_visible: true, file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0, mask_alpha: None,
             });
         }
     }
@@ -8198,7 +8255,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
             roll: 0.0, pitch: 0.0, yaw: 0.0,
             is_target: false, match_obs: true, is_visible: true,
             file_path: String::new(),
-            default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0,
+            default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0, mask_alpha: None,
         };
         let snapshots = snapshot_all_sources(&[source("Stream", f32::INFINITY, f32::NAN), source("Tv", 640.0, 360.0)]);
         assert_eq!((snapshots[0].width, snapshots[0].height), (0.0, 0.0), "non-finite sizes are never saved");
@@ -8562,7 +8619,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: false, match_obs: true, is_visible: true,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0, mask_alpha: None,
             },
             crate::StudioSource {
                 scene: "Scène".to_string(),
@@ -8572,7 +8629,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: true, match_obs: true, is_visible: true,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0, mask_alpha: None,
             },
             crate::StudioSource {
                 scene: "Scène".to_string(),
@@ -8582,7 +8639,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: false, match_obs: true, is_visible: true,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0, mask_alpha: None,
             },
             crate::StudioSource {
                 scene: "Scène".to_string(),
@@ -8592,7 +8649,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: false, match_obs: true, is_visible: true,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0, mask_alpha: None,
             },
         ];
 
@@ -8643,7 +8700,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: true, match_obs: false, is_visible: true,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 200.0, default_height: 200.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 200.0, default_height: 200.0, default_roll: 0.0, mask_alpha: None,
             }
         ];
 
@@ -8720,6 +8777,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
             default_width: 207.0,
             default_height: 207.0,
             default_roll: 0.0,
+            mask_alpha: None,
         };
 
         crate::obs_source::reset_studio_source_to_obs("Scène", &mut src);
@@ -8831,7 +8889,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 1.0, pitch: 2.0, yaw: 3.0,
                 is_target: true, match_obs: true, is_visible: true,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0, mask_alpha: None,
             },
             crate::StudioSource {
                 scene: "Scène".to_string(),
@@ -8841,7 +8899,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: false, match_obs: false, is_visible: false,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 200.0, default_height: 150.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 200.0, default_height: 150.0, default_roll: 0.0, mask_alpha: None,
             }
         ];
 
@@ -8866,7 +8924,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: true, match_obs: true, is_visible: true,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 100.0, default_height: 100.0, default_roll: 0.0, mask_alpha: None,
             }
         ];
 
@@ -8960,7 +9018,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
                 roll: 0.0, pitch: 0.0, yaw: 0.0,
                 is_target: true, match_obs: true, is_visible: true,
                 file_path: String::new(),
-                default_x: 0.0, default_y: 0.0, default_width: 200.0, default_height: 200.0, default_roll: 0.0,
+                default_x: 0.0, default_y: 0.0, default_width: 200.0, default_height: 200.0, default_roll: 0.0, mask_alpha: None,
             }
         ];
 
@@ -9609,6 +9667,7 @@ local x = 1 -- @param after_code 1 0 5 Not a comment line
             default_width: 100.0,
             default_height: 100.0,
             default_roll: 0.0,
+            mask_alpha: None,
         };
 
         {

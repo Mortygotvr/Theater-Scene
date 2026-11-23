@@ -2010,6 +2010,7 @@ pub fn sync_studio_sources_for_scene(scene_name: &str) {
                 default_width: item.width,
                 default_height: item.height,
                 default_roll: item.roll,
+                mask_alpha: None,
             });
         }
     }
@@ -6562,6 +6563,12 @@ pub fn scan_target_source_layer(
     base_width: u32,
     base_height: u32,
 ) {
+    // Its own mask threshold, when it has one (not waited for: the render thread)
+    let own = crate::state::get_state()
+        .studio_sources
+        .try_read()
+        .and_then(|s| s.iter().find(|s| s.name == name).map(|s| s.mask_config(config)));
+    let config = own.as_ref().unwrap_or(config);
     let (hitbox, mask, pixel_grid) = crate::tracker::scan_rgba_with_3d_transform(
         layer_rgba,
         width,
@@ -7428,6 +7435,7 @@ mod tests {
             default_width: 200.0,
             default_height: 300.0,
             default_roll: 0.0,
+            mask_alpha: None,
         };
         state.studio_sources.write().push(src.clone());
 
@@ -7650,6 +7658,7 @@ mod tests {
             default_width: 100.0,
             default_height: 100.0,
             default_roll: 0.0,
+            mask_alpha: None,
         };
         state.studio_sources.write().push(src.clone());
 
@@ -7744,6 +7753,7 @@ mod tests {
             default_width: 100.0,
             default_height: 100.0,
             default_roll: 0.0,
+            mask_alpha: None,
         };
         state.studio_sources.write().push(src.clone());
 

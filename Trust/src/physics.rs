@@ -1819,6 +1819,7 @@ mod tests {
             default_width: 400.0,
             default_height: 300.0,
             default_roll: 0.0,
+            mask_alpha: None,
         });
         let outline = |x: f32, w: f32| crate::types::Hitbox {
             world_x: x,

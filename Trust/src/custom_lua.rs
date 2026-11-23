@@ -909,6 +909,7 @@ mod tests {
                 default_width: 300.0,
                 default_height: 400.0,
                 default_roll: 0.0,
+                mask_alpha: None,
             });
             sources.push(crate::StudioSource {
                 scene: "Scène".to_string(),
@@ -930,6 +931,7 @@ mod tests {
                 default_width: 200.0,
                 default_height: 200.0,
                 default_roll: 0.0,
+                mask_alpha: None,
             });
         }
 
@@ -977,6 +979,7 @@ mod tests {
             default_width: 400.0,
             default_height: 500.0,
             default_roll: 0.0,
+            mask_alpha: None,
         };
         state.studio_sources.write().push(test_source);
 
@@ -1069,6 +1072,7 @@ mod tests {
             default_width: 100.0,
             default_height: 100.0,
             default_roll: 0.0,
+            mask_alpha: None,
         };
 
         {

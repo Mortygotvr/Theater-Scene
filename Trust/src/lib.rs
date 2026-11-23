@@ -1780,6 +1780,10 @@ pub struct StudioSource {
     pub default_width: f32,
     pub default_height: f32,
     pub default_roll: f32,
+    /// Its own mask threshold (alpha 0–255 at least: solid), over the
+    /// Settings' one: a glass jar's walls alone (Theater Rig's glass picture)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_alpha: Option<u8>,
 }
 
 #[unsafe(no_mangle)]
@@ -1887,6 +1891,7 @@ pub extern "C" fn trust_studio_add_source_v2(
             default_width: width,
             default_height: height,
             default_roll: roll,
+            mask_alpha: None,
         });
     }
 }
@@ -3986,6 +3991,7 @@ mod tests {
             default_width: 50.0,
             default_height: 50.0,
             default_roll: 0.0,
+            mask_alpha: None,
         });
 
         // Create a 400x300 buffer with transparent layer background [0,0,0,0]
@@ -4062,6 +4068,7 @@ mod tests {
             default_width: 100.0,
             default_height: 100.0,
             default_roll: 45.0,
+            mask_alpha: None,
         });
 
         let cw = 400u32;
@@ -4125,6 +4132,7 @@ mod tests {
             default_width: 100.0,
             default_height: 100.0,
             default_roll: 0.0,
+            mask_alpha: None,
         });
 
         let cw = 400u32;
@@ -4541,3 +4549,14 @@ mod tests {
 }
 
 
+
+impl StudioSource {
+    /// The tracking settings for its mask: `config` with its own threshold
+    pub fn mask_config(&self, config: &crate::types::TrackingConfig) -> crate::types::TrackingConfig {
+        let mut c = *config;
+        if let Some(a) = self.mask_alpha {
+            c.alpha_threshold = a;
+        }
+        c
+    }
+}
